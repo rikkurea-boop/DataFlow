@@ -88,7 +88,7 @@ def test_nested_text_fields_remain_supported(monkeypatch, tmp_path):
     monkeypatch.setenv("PWD", str(tmp_path))
 
     (input_dir / "nested.json").write_text(
-        json.dumps({"payload": {"summary": "nested summary content that should survive"}}),
+        json.dumps({"content": {"summary": "nested summary content that should survive"}}),
         encoding="utf-8",
     )
 
