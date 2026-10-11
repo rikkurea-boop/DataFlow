@@ -30,7 +30,7 @@ class QAExtractor(OperatorABC):
 
     @staticmethod
     def get_desc(lang: str = "zh"):
-        """获取描述"""
+        """获取算子描述"""
         if lang == "zh":
             return (
                 "QA对提取器 - 将嵌套的QA_pairs转换为Alpaca微调格式\n\n"
