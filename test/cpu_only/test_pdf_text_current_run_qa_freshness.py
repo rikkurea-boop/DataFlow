@@ -4,88 +4,82 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PDF_CLI = ROOT / "dataflow" / "cli_funcs" / "cli_pdf.py"
-TEXT_CLI = ROOT / "dataflow" / "cli_funcs" / "cli_text.py"
+QA_EXTRACTOR = ROOT / "dataflow" / "operators" / "knowledge_cleaning" / "generate" / "qa_extract.py"
+VQA_FORMATTER = ROOT / "dataflow" / "operators" / "pdf2vqa" / "generate" / "vqa_formatter.py"
+TEXT_CONVERTER = ROOT / "dataflow" / "cli_funcs" / "text2model_pipeline" / "merge_filter_qa_pairs.py"
 
 
 def _source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _before(source: str, left: str, right: str) -> bool:
-    left_pos = source.find(left)
-    right_pos = source.find(right)
-    return left_pos >= 0 and right_pos >= 0 and left_pos < right_pos
+@pytest.mark.cpu
+def test_qa_extractor_removes_stale_output_when_current_run_has_no_qa():
+    source = _source(QA_EXTRACTOR)
+    no_qa = source.index("if not all_qas:")
+    next_section = source.index("# 保存JSON", no_qa)
+    block = source[no_qa:next_section]
+    assert "self.output_json_file" in block
+    assert "Path(self.output_json_file)" in block
+    assert ".unlink()" in block
 
 
 @pytest.mark.cpu
-def test_pdf_selected_qa_path_is_established_before_step2():
-    source = _source(PDF_CLI)
-    assert _before(
-        source,
-        'qa_json_path = cache_path_obj / ".cache" / "data" / "qa.json"',
-        '# Step 2: Data Processing',
-    )
+def test_vqa_formatter_removes_stale_output_when_current_run_has_no_samples():
+    source = _source(VQA_FORMATTER)
+    no_results = source.index("if not results:")
+    next_section = source.index("if self.output_json_file:", no_results)
+    block = source[no_results:next_section]
+    assert "self.output_json_file" in block
+    assert "Path(self.output_json_file)" in block
+    assert ".unlink()" in block
 
 
 @pytest.mark.cpu
-def test_pdf_stale_qa_is_invalidated_before_step2():
-    source = _source(PDF_CLI)
-    assert _before(source, "qa_json_path.unlink()", '# Step 2: Data Processing')
+def test_text_conversion_failure_exits_nonzero():
+    source = _source(TEXT_CONVERTER)
+    failure = source.index('print("Data conversion failed")')
+    tail = source[failure:failure + 160]
+    assert "raise SystemExit(1)" in tail
 
 
 @pytest.mark.cpu
-def test_text_selected_training_artifacts_are_established_before_step3():
-    source = _source(TEXT_CLI)
-    assert _before(
-        source,
-        'qa_file = cache_path_obj / ".cache" / "data" / "qa.json"',
-        '# Step 3: Convert to training format',
-    )
-    assert _before(
-        source,
-        'dataset_info_file = cache_path_obj / ".cache" / "data" / "dataset_info.json"',
-        '# Step 3: Convert to training format',
-    )
+def test_text_dataset_info_failure_exits_nonzero():
+    source = _source(TEXT_CONVERTER)
+    failure = source.index('print("Configuration file creation failed")')
+    tail = source[failure:failure + 180]
+    assert "raise SystemExit(1)" in tail
 
 
 @pytest.mark.cpu
-def test_text_stale_qa_is_invalidated_before_step3():
-    source = _source(TEXT_CLI)
-    step3 = source.index('# Step 3: Convert to training format')
-    conversion = source.index('run_script_with_args(script3_path, "QA format conversion"', step3)
-    qa_unlink = source.find("qa_file.unlink()", step3, conversion)
-    assert qa_unlink >= 0
+def test_qa_extractor_preserves_reusable_no_result_return_contract():
+    source = _source(QA_EXTRACTOR)
+    no_qa = source.index("if not all_qas:")
+    next_section = source.index("# 保存JSON", no_qa)
+    block = source[no_qa:next_section]
+    assert "return [output_instruction_key, output_question_key, output_answer_key]" in block
 
 
 @pytest.mark.cpu
-def test_text_stale_dataset_info_is_invalidated_before_step3():
-    source = _source(TEXT_CLI)
-    step3 = source.index('# Step 3: Convert to training format')
-    conversion = source.index('run_script_with_args(script3_path, "QA format conversion"', step3)
-    info_unlink = source.find("dataset_info_file.unlink()", step3, conversion)
-    assert info_unlink >= 0
+def test_vqa_formatter_preserves_reusable_no_result_return_contract():
+    source = _source(VQA_FORMATTER)
+    no_results = source.index("if not results:")
+    next_section = source.index("if self.output_json_file:", no_results)
+    block = source[no_results:next_section]
+    assert "return [output_messages_key, output_images_key]" in block
 
 
 @pytest.mark.cpu
-def test_pdf_postcondition_still_requires_qa_after_step2():
-    source = _source(PDF_CLI)
-    step2 = source.index('# Step 2: Data Processing')
-    check = source.index("if qa_json_path.exists():", step2)
-    assert check > step2
+def test_successful_pdf_formatters_still_overwrite_output():
+    qa_source = _source(QA_EXTRACTOR)
+    vqa_source = _source(VQA_FORMATTER)
+    assert "with open(output_path, 'w', encoding='utf-8') as f:" in qa_source
+    assert 'with open(output_path, "w", encoding="utf-8") as f:' in vqa_source
 
 
 @pytest.mark.cpu
-def test_text_postcondition_still_requires_both_training_files_after_step3():
-    source = _source(TEXT_CLI)
-    step3 = source.index('# Step 3: Convert to training format')
-    check = source.index("if not qa_file.exists() or not dataset_info_file.exists():", step3)
-    assert check > step3
-
-
-@pytest.mark.cpu
-def test_current_stage_invocations_remain_present():
-    pdf_source = _source(PDF_CLI)
-    text_source = _source(TEXT_CLI)
-    assert 'run_script_with_args(script2, "Step 2: Data Processing"' in pdf_source
-    assert 'run_script_with_args(script3_path, "QA format conversion"' in text_source
+def test_successful_text_conversion_still_creates_both_training_files():
+    source = _source(TEXT_CONVERTER)
+    assert 'qa_file = output_dir / "qa.json"' in source
+    assert 'config_file = output_dir / "dataset_info.json"' in source
+    assert "Ready for LlamaFactory training!" in source
