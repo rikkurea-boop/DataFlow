@@ -292,8 +292,10 @@ def main():
             print("Ready for LlamaFactory training!")
         else:
             print("Configuration file creation failed")
+            raise SystemExit(1)
     else:
         print("Data conversion failed")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
