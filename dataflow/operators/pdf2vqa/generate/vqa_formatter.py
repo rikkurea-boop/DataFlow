@@ -236,6 +236,10 @@ class VQAFormatter(OperatorABC):
 
         if not results:
             self.logger.warning("No valid VQA samples found after conversion!")
+            if self.output_json_file:
+                output_path = Path(self.output_json_file)
+                if output_path.exists() or output_path.is_symlink():
+                    output_path.unlink()
             return [output_messages_key, output_images_key]
 
         if self.output_json_file:
