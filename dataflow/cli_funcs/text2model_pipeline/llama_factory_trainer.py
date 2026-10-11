@@ -110,7 +110,7 @@ class LlamaFactoryTrainer:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self.config_path.exists():
-            # Config file exists, read if exists
+            # Config file exists, read it
             print(f"Found config file: {self.config_path}")
             return self._load_existing_config()
         else:
