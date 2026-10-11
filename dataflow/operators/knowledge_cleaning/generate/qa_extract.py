@@ -30,7 +30,7 @@ class QAExtractor(OperatorABC):
 
     @staticmethod
     def get_desc(lang: str = "zh"):
-        """获取算子描述"""
+        """获取描述"""
         if lang == "zh":
             return (
                 "QA对提取器 - 将嵌套的QA_pairs转换为Alpaca微调格式\n\n"
@@ -225,6 +225,10 @@ class QAExtractor(OperatorABC):
 
         if not all_qas:
             self.logger.warning("No QA pairs found!")
+            if self.output_json_file:
+                output_path = Path(self.output_json_file)
+                if output_path.exists() or output_path.is_symlink():
+                    output_path.unlink()
             return [output_instruction_key, output_question_key, output_answer_key]
 
         # 保存JSON（可选）
