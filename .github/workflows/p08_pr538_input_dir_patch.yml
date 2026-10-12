@@ -1,0 +1,158 @@
+name: P08 PR538 input_dir exact patch
+
+on:
+  push:
+    branches:
+      - validation/p08-pr538-input-dir-amendment
+    paths:
+      - '.github/workflows/p08_pr538_input_dir_patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install lightweight runtime
+        run: python -m pip install -q pytest typer requests colorama appdirs
+      - name: Apply exact production and strict-test patches
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def blob_sha(raw: bytes) -> str:
+              return hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+
+          source = Path('dataflow/cli_funcs/cli_text.py')
+          source_bytes = source.read_bytes()
+          assert blob_sha(source_bytes) == 'efa77e8717bff971ffaa2aeddc8e1b7b0f280cc2', blob_sha(source_bytes)
+
+          old_def = b'def cli_text2model_train(input_keys: str = None, lf_yaml: str = "./.cache/train_config.yaml") -> bool:\n'
+          new_def = b'def cli_text2model_train(input_keys: str = None, lf_yaml: str = "./.cache/train_config.yaml", input_dir: str = "./") -> bool:\n'
+          old_hardcode = b'    input_dir = "./"\n    cache_path_obj = current_dir\n'
+          new_hardcode = b'    cache_path_obj = current_dir\n'
+          assert source_bytes.count(old_def) == 1, source_bytes.count(old_def)
+          assert source_bytes.count(old_hardcode) == 1, source_bytes.count(old_hardcode)
+          patched_source = source_bytes.replace(old_def, new_def, 1).replace(old_hardcode, new_hardcode, 1)
+          source.write_bytes(patched_source)
+          print('PRODUCTION_BLOB=' + blob_sha(patched_source))
+
+          legacy = Path('test/cpu_only/test_cli_helper_failure_exit.py')
+          legacy_bytes = legacy.read_bytes()
+          assert blob_sha(legacy_bytes) == '932ac48688187a698555c71d16452db121cd50e4', blob_sha(legacy_bytes)
+          old_helper = b'''    def helper(*args, **kwargs):\n        if behavior == "exception":\n            raise RuntimeError("boom")\n        print(f"helper-{behavior}")\n        return behavior == "true"\n\n    setattr(module, helper_name, helper)\n'''
+          new_helper = b'''    def outcome():\n        if behavior == "exception":\n            raise RuntimeError("boom")\n        print(f"helper-{behavior}")\n        return behavior == "true"\n\n    if helper_name == "cli_pdf2model_init":\n        def helper(cache_path="./", model_name=None, qa_type="kbc", pdf2model_train_backend="base"):\n            return outcome()\n    elif helper_name == "cli_pdf2model_train":\n        def helper(lf_yaml=".cache/train_config.yaml", cache_path="./"):\n            return outcome()\n    elif helper_name == "cli_text2model_init":\n        def helper(cache_path="./"):\n            return outcome()\n    elif helper_name == "cli_text2model_train":\n        def helper(input_keys=None, lf_yaml="./.cache/train_config.yaml", input_dir="./"):\n            return outcome()\n    else:\n        raise AssertionError(helper_name)\n\n    setattr(module, helper_name, helper)\n'''
+          assert legacy_bytes.count(old_helper) == 1, legacy_bytes.count(old_helper)
+          patched_legacy = legacy_bytes.replace(old_helper, new_helper, 1)
+          legacy.write_bytes(patched_legacy)
+          print('LEGACY_REGRESSION_BLOB=' + blob_sha(patched_legacy))
+          PY
+          git diff --check -- dataflow/cli_funcs/cli_text.py test/cpu_only/test_cli_helper_failure_exit.py
+          git diff -- dataflow/cli_funcs/cli_text.py test/cpu_only/test_cli_helper_failure_exit.py
+      - name: GREEN boundary, compatibility, and legacy matrix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import importlib.util
+          import inspect
+          import sys
+          import types
+          import pytest
+          from typer.testing import CliRunner
+
+          root = Path.cwd()
+
+          class Logger:
+              def info(self, *a, **k): pass
+              def error(self, *a, **k): pass
+              def warning(self, *a, **k): pass
+              def success(self, *a, **k): pass
+
+          dataflow = types.ModuleType('dataflow')
+          dataflow.__path__ = [str(root / 'dataflow')]
+          dataflow.get_logger = lambda: Logger()
+          sys.modules['dataflow'] = dataflow
+
+          cli_funcs = types.ModuleType('dataflow.cli_funcs')
+          cli_funcs.__path__ = [str(root / 'dataflow' / 'cli_funcs')]
+          cli_funcs.cli_env = lambda: None
+          cli_funcs.cli_init = lambda **kwargs: None
+          sys.modules['dataflow.cli_funcs'] = cli_funcs
+
+          version = types.ModuleType('dataflow.version')
+          version.__version__ = 'test'
+          sys.modules['dataflow.version'] = version
+
+          utils = types.ModuleType('dataflow.cli_funcs.utils')
+          utils._echo = lambda message, color=None: print(message)
+          sys.modules['dataflow.cli_funcs.utils'] = utils
+
+          import dataflow.cli_funcs.cli_text as cli_text
+          import dataflow.cli as cli
+
+          assert str(inspect.signature(cli_text.cli_text2model_train)) == '(input_keys: str = None, lf_yaml: str = \'./.cache/train_config.yaml\', input_dir: str = \'./\') -> bool'
+
+          boundary_path = root / 'test/cpu_only/test_text2model_input_dir_boundary.py'
+          spec = importlib.util.spec_from_file_location('p08_boundary', boundary_path)
+          boundary = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(boundary)
+
+          tmp = root / '.tmp-p08-green'
+          tmp.mkdir(exist_ok=True)
+          mp = pytest.MonkeyPatch()
+          try:
+              boundary.test_text2model_train_explicit_input_dir_crosses_real_helper_boundary(mp, tmp)
+          finally:
+              mp.undo()
+          mp = pytest.MonkeyPatch()
+          try:
+              boundary.test_text2model_train_signature_preserves_default_and_old_positional_usage(mp)
+          finally:
+              mp.undo()
+          print('BOUNDARY_GREEN=2/2')
+
+          reached = {'value': False}
+          def controlled_verify_environment():
+              reached['value'] = True
+              return False
+          cli_text.verify_environment = controlled_verify_environment
+          assert cli_text.cli_text2model_train(input_dir='./controlled-input') is False
+          assert reached['value'] is True
+          print('REAL_HELPER_BODY_REACHED=true')
+
+          legacy_path = root / 'test/cpu_only/test_cli_helper_failure_exit.py'
+          spec = importlib.util.spec_from_file_location('p08_legacy', legacy_path)
+          legacy = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(legacy)
+          tests = (
+              legacy.test_helper_false_exits_nonzero_without_duplicate_wrapper_error,
+              legacy.test_helper_true_preserves_success,
+              legacy.test_helper_exception_remains_nonzero,
+          )
+          count = 0
+          for test in tests:
+              for case in legacy.COMMANDS:
+                  mp = pytest.MonkeyPatch()
+                  try:
+                      test(mp, *case)
+                  finally:
+                      mp.undo()
+                  count += 1
+          assert count == 12
+          print('LEGACY_MATRIX_GREEN=12/12')
+          PY
+      - name: Commit validated scratch patch
+        run: |
+          git config user.name 'P08 PR538 amendment runner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add dataflow/cli_funcs/cli_text.py test/cpu_only/test_cli_helper_failure_exit.py
+          git commit -m 'fix(text2model): honor public input directory'
+          git push origin HEAD:validation/p08-pr538-input-dir-amendment
