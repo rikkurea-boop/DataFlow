@@ -16,6 +16,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test dependency
-        run: python -m pip install pytest
+        run: python -m pip install pytest requests
       - name: Run accepted Perspective regression
         run: python -m pytest -q test/cpu_only/test_perspective_serving_instantiation.py
