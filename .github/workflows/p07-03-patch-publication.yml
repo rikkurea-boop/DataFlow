@@ -23,15 +23,17 @@ jobs:
 
           path = Path("dataflow/utils/storage.py")
           text = path.read_text(encoding="utf-8")
-          old = '''            os.replace(tmp_path, file_path)
-            with self._lock:
-                self._dirty_steps.discard(step)
-'''
-          new = '''            os.replace(tmp_path, file_path)
-            with self._lock:
-                if self._buffers.get(step) is df:
-                    self._dirty_steps.discard(step)
-'''
+          old = (
+              "            os.replace(tmp_path, file_path)\n"
+              "            with self._lock:\n"
+              "                self._dirty_steps.discard(step)\n"
+          )
+          new = (
+              "            os.replace(tmp_path, file_path)\n"
+              "            with self._lock:\n"
+              "                if self._buffers.get(step) is df:\n"
+              "                    self._dirty_steps.discard(step)\n"
+          )
           if text.count(old) != 1:
               raise SystemExit(f"expected one flush dirty-clear block, found {text.count(old)}")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
