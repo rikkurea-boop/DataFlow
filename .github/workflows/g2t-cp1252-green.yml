@@ -1,0 +1,45 @@
+name: P08 G2T cp1252 GREEN
+
+on:
+  push:
+    branches:
+      - validation/p08-g2t-cp1252-green
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v7
+      - name: Check out exact candidate
+        run: git checkout 2b83925889f73ea6cc469250e05f6f10dc6b9914
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e .[test]
+      - name: Run G2T boundary and compatibility regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          pytest -q \
+            test/cpu_only/test_text2model_g2t_boundaries.py \
+            test/cpu_only/test_text2model_g2t_compatibility.py \
+            test/cpu_only/test_text2model_merge_producer.py \
+            test/cpu_only/test_text2model_merge_producer_cp1252.py \
+            test/cpu_only/test_text2model_input_dir_boundary.py \
+            test/cpu_only/test_cli_helper_failure_exit.py
+      - name: Compile and diff checks
+        run: |
+          python -m py_compile \
+            dataflow/cli_funcs/text2model_pipeline/merge_json_jsonl.py \
+            test/cpu_only/test_text2model_merge_producer_cp1252.py
+          git diff --check 39d0461c733295ca858b74a3ace4f941ecc178ea 2b83925889f73ea6cc469250e05f6f10dc6b9914
+      - name: Run current CPU/API suite
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: pytest -q -m "cpu or api"
