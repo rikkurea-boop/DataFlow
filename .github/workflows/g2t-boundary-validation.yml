@@ -1,0 +1,78 @@
+name: G2T boundary validation
+
+on:
+  push:
+    branches:
+      - validation/p08-g2t-green
+    paths:
+      - "dataflow/**/*.py"
+      - "test/**/*.py"
+      - ".github/workflows/g2t-boundary-validation.yml"
+
+jobs:
+  g2t-targeted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Targeted G2T and G1 regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          pytest -q \
+            test/cpu_only/test_text2model_g2t_boundaries.py \
+            test/cpu_only/test_text2model_g2t_compatibility.py \
+            test/cpu_only/test_text2model_merge_producer.py \
+            test/cpu_only/test_text2model_input_dir_boundary.py \
+            test/cpu_only/test_cli_helper_failure_exit.py
+      - name: Compile changed Python
+        run: |
+          python -m py_compile \
+            dataflow/cli.py \
+            dataflow/cli_funcs/cli_text.py \
+            dataflow/cli_funcs/text2model_pipeline/llama_factory_trainer.py \
+            dataflow/cli_funcs/text2model_pipeline/text_to_qa_pipeline.py \
+            dataflow/cli_funcs/text2model_pipeline/merge_json_jsonl.py \
+            test/cpu_only/test_text2model_g2t_boundaries.py \
+            test/cpu_only/test_text2model_g2t_compatibility.py \
+            test/cpu_only/test_text2model_merge_producer.py \
+            test/cpu_only/test_text2model_input_dir_boundary.py \
+            test/cpu_only/test_cli_helper_failure_exit.py
+      - name: Diff check against locked base
+        run: |
+          git diff --check 42e588f1946eba65566a6b1f11a6b22d153c1f9c..HEAD
+
+  cpu-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Current upstream CPU/API suite
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          pytest -m "cpu or api"
