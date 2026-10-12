@@ -1,0 +1,46 @@
+name: P08 G5 GREEN
+
+on:
+  push:
+    branches:
+      - validation/p08-g5-green
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Check out exact candidate
+        run: git checkout fc8dac08d294a8068fddceff85bfc3b60fbc469b
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Run G5 boundary and G4 composition regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          pytest -q \
+            test/cpu_only/test_pdf2model_step2_cache_boundary.py \
+            test/cpu_only/test_pdf_detector_postcondition.py
+      - name: Compile and diff checks
+        run: |
+          python -m py_compile \
+            dataflow/statics/pipelines/gpu_pipelines/kbcleaning/kbcleaning_pipeline_vllm.py \
+            dataflow/statics/pipelines/api_pipelines/pdf_vqa_extract_pipeline.py \
+            test/cpu_only/test_pdf2model_step2_cache_boundary.py
+          git diff --check 42e588f1946eba65566a6b1f11a6b22d153c1f9c fc8dac08d294a8068fddceff85bfc3b60fbc469b
+      - name: Run current CPU/API suite
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: pytest -q -m "cpu or api"
