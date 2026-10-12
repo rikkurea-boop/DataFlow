@@ -20,12 +20,13 @@ jobs:
         run: |
           uv pip install --no-cache -r requirements.txt
           uv pip install -e .[test]
-      - name: Inspect real Step-1 chain
+      - name: Inspect CliRunner real subprocess boundary
         run: |
           python - <<'PY'
-          import json, os, subprocess, sys, tempfile
+          import json, os, tempfile
           from pathlib import Path
-          import dataflow
+          from typer.testing import CliRunner
+          from dataflow.cli import app
           from dataflow.cli_funcs import cli_text
 
           root = Path(tempfile.mkdtemp(prefix='g2t-debug-'))
@@ -40,31 +41,14 @@ jobs:
           config.write_text('model_name_or_path: stub\n', encoding='utf-8')
           os.chdir(workspace)
           os.environ['PWD'] = str(workspace)
-
-          script = cli_text.get_dataflow_script_path('merge_json_jsonl.py')
-          print('dataflow_file=', dataflow.__file__)
-          print('lookup=', script)
-          print('lookup_exists=', None if script is None else Path(script).exists())
-          if script is not None:
-              p = subprocess.run([sys.executable, str(script), str(input_dir), '--cache', str(cache)], cwd=str(workspace), text=True, capture_output=True)
-              print('direct_rc=', p.returncode)
-              print('direct_stdout=', p.stdout)
-              print('direct_stderr=', p.stderr)
-              manifest = cache / '.cache' / 'gpu' / 'text_input.jsonl'
-              print('direct_manifest_exists=', manifest.exists())
-              if manifest.exists():
-                  print('direct_manifest=', manifest.read_text(encoding='utf-8'))
-                  manifest.unlink()
-
           cli_text.verify_environment = lambda: True
-          ok = cli_text.cli_text2model_train(
-              lf_yaml=str(config),
-              input_dir=str(input_dir),
-              cache_path=str(cache),
-          )
+
+          runner = CliRunner()
+          result = runner.invoke(app, ['text2model', 'train', str(input_dir), '--cache', str(cache)])
           manifest = cache / '.cache' / 'gpu' / 'text_input.jsonl'
-          print('helper_ok=', ok)
-          print('helper_manifest_exists=', manifest.exists())
-          if manifest.exists():
-              print('helper_manifest=', manifest.read_text(encoding='utf-8'))
+          print('exit_code=', result.exit_code)
+          print('exception_type=', None if result.exception is None else type(result.exception).__name__)
+          print('exception_repr=', repr(result.exception))
+          print('captured_output=', repr(result.output))
+          print('manifest_exists=', manifest.exists())
           PY
