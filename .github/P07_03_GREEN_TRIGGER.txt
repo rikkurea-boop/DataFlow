@@ -1,0 +1,1 @@
+Trigger P07.03 GREEN validation after workflow registration.
