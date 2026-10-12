@@ -1,0 +1,65 @@
+name: P09.03 GREEN validation
+
+on:
+  push:
+    branches:
+      - validation/p09-03-green-current
+
+jobs:
+  test:
+    name: P09.03 ${{ matrix.os }} Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 056f1bb30d967bcedafef14384e747eb66b8bb11
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Free disk on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Hardened P09.03 boundary regression
+        run: pytest -q test/cpu_only/test_lightrag_dependency_scope.py
+      - name: Compile changed files
+        run: python -m py_compile dataflow/serving/light_rag_serving.py test/cpu_only/test_lightrag_dependency_scope.py
+      - name: Full CPU/API suite
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+        run: pytest -m "cpu or api"
+      - name: Candidate diff check
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: git diff --check 4b2a0b8abbf9988f20f309c1f241c90357914147..056f1bb30d967bcedafef14384e747eb66b8bb11
