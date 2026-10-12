@@ -69,9 +69,8 @@ class PromptedGenerator(OperatorABC):
         # Prepare LLM inputs by formatting the prompt with raw content from the dataframe
         for index, row in dataframe.iterrows():
             raw_content = row.get(self.input_key, '')
-            if raw_content:
-                llm_input = self.user_prompt + str(raw_content)
-                llm_inputs.append(llm_input)
+            llm_input = self.user_prompt + str(raw_content)
+            llm_inputs.append(llm_input)
         
         # Generate the text using the model
         try:
