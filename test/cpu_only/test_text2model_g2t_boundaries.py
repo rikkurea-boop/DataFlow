@@ -132,13 +132,13 @@ def test_public_text2model_train_default_paths_remain_compatible(monkeypatch, tm
     assert result.exit_code != 0
 
 
-def test_public_text2model_default_path_executes_real_builtin_merge_producer(monkeypatch, tmp_path):
-    """B: default public/helper path must reach the real built-in Step-1 subprocess."""
+def test_real_helper_default_path_executes_real_builtin_merge_producer(monkeypatch, tmp_path):
+    """B: real helper must cross built-in lookup + real subprocess for Step 1."""
     workspace = tmp_path / "workspace"
     input_dir = workspace / "input"
     workspace.mkdir()
     _write_text_input(input_dir)
-    _write_train_config(workspace)
+    config = _write_train_config(workspace)
     monkeypatch.chdir(workspace)
     monkeypatch.setenv("PWD", str(workspace))
     monkeypatch.setattr(cli_text, "verify_environment", lambda: True)
@@ -146,31 +146,35 @@ def test_public_text2model_default_path_executes_real_builtin_merge_producer(mon
     # Do not mock get_dataflow_script_path or run_script_with_args: Step 1 must
     # cross the real built-in lookup and real subprocess boundary. The helper is
     # allowed to fail later at the absent workspace Text2QA script.
-    result = runner.invoke(app, ["text2model", "train", str(input_dir)])
+    ok = cli_text.cli_text2model_train(
+        lf_yaml=str(config),
+        input_dir=str(input_dir),
+    )
 
     records = _manifest_records(workspace)
     assert len(records) == 1
     produced_text = Path(records[0]["text_path"])
     assert produced_text.is_file()
     assert produced_text.read_text(encoding="utf-8") == "current selected-cache text"
-    assert result.exit_code != 0
+    assert ok is False
 
 
-def test_public_text2model_selected_cache_executes_real_builtin_merge_producer(monkeypatch, tmp_path):
-    """B: selected cache must receive the real Step-1 output, not the workspace cache."""
+def test_real_helper_selected_cache_executes_real_builtin_merge_producer(monkeypatch, tmp_path):
+    """B: selected cache must receive real Step-1 output, not workspace cache."""
     workspace = tmp_path / "workspace"
     input_dir = workspace / "input"
     selected_cache = tmp_path / "selected-cache"
     workspace.mkdir()
     _write_text_input(input_dir)
-    _write_train_config(selected_cache)
+    config = _write_train_config(selected_cache)
     monkeypatch.chdir(workspace)
     monkeypatch.setenv("PWD", str(workspace))
     monkeypatch.setattr(cli_text, "verify_environment", lambda: True)
 
-    result = runner.invoke(
-        app,
-        ["text2model", "train", str(input_dir), "--cache", str(selected_cache)],
+    ok = cli_text.cli_text2model_train(
+        lf_yaml=str(config),
+        input_dir=str(input_dir),
+        cache_path=str(selected_cache),
     )
 
     records = _manifest_records(selected_cache)
@@ -179,7 +183,7 @@ def test_public_text2model_selected_cache_executes_real_builtin_merge_producer(m
     assert produced_text.is_file()
     assert produced_text.read_text(encoding="utf-8") == "current selected-cache text"
     assert not (workspace / ".cache" / "gpu" / "text_input.jsonl").exists()
-    assert result.exit_code != 0
+    assert ok is False
 
 
 class _StorageCapture:
