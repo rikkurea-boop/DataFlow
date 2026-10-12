@@ -1,0 +1,21 @@
+name: P09.02 final RED validation
+
+on:
+  push:
+    branches:
+      - validation/p09-02-red-final
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 83fc86bc9b1959e002a7782f82b9f58a3fa4873e
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependency
+        run: python -m pip install pytest tqdm
+      - name: Run hardened Perspective regression
+        run: python -m pytest -q --confcutdir=test/cpu_only test/cpu_only/test_perspective_serving_instantiation.py
