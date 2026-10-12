@@ -1,0 +1,108 @@
+name: P08 PR538 input_dir RED fast
+
+on:
+  push:
+    branches:
+      - validation/p08-pr538-input-dir-amendment
+    paths:
+      - '.github/workflows/p08_pr538_input_dir_red_fast.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  red-fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install lightweight runtime
+        run: python -m pip install -q pytest typer requests colorama appdirs
+      - name: Real-boundary RED and canonical test RED
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import importlib.util
+          import sys
+          import types
+          import pytest
+          from typer.testing import CliRunner
+
+          root = Path.cwd()
+
+          class Logger:
+              def info(self, *a, **k): pass
+              def error(self, *a, **k): pass
+              def warning(self, *a, **k): pass
+              def success(self, *a, **k): pass
+
+          dataflow = types.ModuleType('dataflow')
+          dataflow.__path__ = [str(root / 'dataflow')]
+          dataflow.get_logger = lambda: Logger()
+          sys.modules['dataflow'] = dataflow
+
+          cli_funcs = types.ModuleType('dataflow.cli_funcs')
+          cli_funcs.__path__ = [str(root / 'dataflow' / 'cli_funcs')]
+          cli_funcs.cli_env = lambda: None
+          cli_funcs.cli_init = lambda **kwargs: None
+          sys.modules['dataflow.cli_funcs'] = cli_funcs
+
+          version = types.ModuleType('dataflow.version')
+          version.__version__ = 'test'
+          sys.modules['dataflow.version'] = version
+
+          utils = types.ModuleType('dataflow.cli_funcs.utils')
+          utils._echo = lambda message, color=None: print(message)
+          sys.modules['dataflow.cli_funcs.utils'] = utils
+
+          import dataflow.cli_funcs.cli_text as cli_text
+          import dataflow.cli as cli
+
+          assert cli_text.__file__.endswith('dataflow/cli_funcs/cli_text.py')
+          assert cli.__file__.endswith('dataflow/cli.py')
+
+          reached = {'value': False}
+          def controlled_verify_environment():
+              reached['value'] = True
+              return False
+          cli_text.verify_environment = controlled_verify_environment
+
+          try:
+              cli_text.cli_text2model_train(input_dir='./controlled-input')
+          except TypeError as exc:
+              text = str(exc)
+              assert "unexpected keyword argument 'input_dir'" in text, text
+              print('DIRECT_TYPEERROR=' + text)
+          else:
+              raise AssertionError('pre-fix real helper unexpectedly accepted input_dir')
+          assert reached['value'] is False
+
+          result = CliRunner().invoke(cli.app, ['text2model', 'train', './controlled-input'])
+          assert result.exit_code != 0
+          assert "unexpected keyword argument 'input_dir'" in result.output, result.output
+          assert reached['value'] is False
+          print('PUBLIC_CLI_RED=' + result.output.strip())
+          print('HELPER_BODY_REACHED=false')
+
+          test_path = root / 'test/cpu_only/test_text2model_input_dir_boundary.py'
+          spec = importlib.util.spec_from_file_location('p08_boundary_regression', test_path)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          mp = pytest.MonkeyPatch()
+          tmp = root / '.tmp-p08-boundary'
+          tmp.mkdir(exist_ok=True)
+          try:
+              try:
+                  mod.test_text2model_train_explicit_input_dir_crosses_real_helper_boundary(mp, tmp)
+              except AssertionError:
+                  print('BOUNDARY_REGRESSION_RED=expected assertion failure')
+              else:
+                  raise AssertionError('canonical boundary regression unexpectedly passed pre-fix')
+          finally:
+              mp.undo()
+          PY
