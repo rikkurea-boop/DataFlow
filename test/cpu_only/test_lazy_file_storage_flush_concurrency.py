@@ -52,14 +52,13 @@ def test_write_during_older_flush_remains_dirty_and_persistable(tmp_path, monkey
     flush_thread.join(timeout=10)
     assert not flush_thread.is_alive()
 
-    # The completed old flush may persist only its selected snapshot. The newer
-    # write must remain dirty so the next normal flush can persist it.
+    # The completed old flush may persist only its selected snapshot.
     assert pd.read_json(output, lines=True).to_dict("records") == [
         {"text": "old generation"}
     ]
-    assert 1 in storage._dirty_steps
 
-    # Restore real persistence before proving the newer generation is flushable.
+    # Restore real persistence and use the normal public flush path. The newer
+    # write must still be considered dirty so flush_all() persists it.
     monkeypatch.setattr(storage_module.os, "replace", original_replace)
     storage.flush_all()
 
