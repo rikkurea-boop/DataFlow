@@ -30,7 +30,7 @@ def extract_text_from_json(json_file_path):
                 data = json.load(f)
                 text_content = extract_text_from_data(data)
                 return [text_content] if text_content else []
-                
+
     except Exception as e:
         print(f"  ❌ Error reading {json_file_path}: {e}")
         return []
@@ -39,18 +39,18 @@ def extract_text_from_json(json_file_path):
 def extract_text_from_data(data):
     """从JSON数据中提取文本内容，保持原始状态"""
     text_fields = ['text', 'content', 'body', 'raw_text', 'message', 'description', 'summary']
-    
+
     def clean_text(text):
         """最小化处理，保持原始文本"""
         if not isinstance(text, str):
             return None
-        
+
         text = text.strip()
         if not text:
             return None
-            
+
         return text  # 直接返回，不做任何清理或截断
-    
+
     if isinstance(data, dict):
         # 查找文本字段
         for field in text_fields:
@@ -65,14 +65,14 @@ def extract_text_from_data(data):
                     nested_text = extract_text_from_data(content)
                     if nested_text:
                         return clean_text(nested_text)
-        
+
         # 如果没找到标准字段，尝试查找所有字符串值
         for key, value in data.items():
             if isinstance(value, str) and len(value.strip()) > 50:
                 cleaned = clean_text(value)
                 if cleaned:
                     return cleaned
-                    
+
     elif isinstance(data, list):
         # 如果是列表，处理每个元素
         texts = []
@@ -85,14 +85,14 @@ def extract_text_from_data(data):
                 cleaned = clean_text(item)
                 if cleaned:
                     texts.append(cleaned)
-        
+
         if texts:
             combined = "\n\n".join(texts)
             return clean_text(combined)
-            
+
     elif isinstance(data, str):
         return clean_text(data)
-    
+
     return None
 
 
@@ -100,45 +100,45 @@ def create_text_files(json_files, cache_path_obj):
     """将JSON文件中的文本内容转换为独立的文本文件，保持原始格式"""
     temp_dir = cache_path_obj / ".cache" / "gpu" / "temp_texts"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    
+
     text_paths = []
     processed_count = 0
-    
+
     print("\nExtracting text content from JSON files...")
     print("-" * 50)
-    
+
     for i, json_file in enumerate(json_files):
         print(f"Processing: {json_file.name}")
-        
+
         # 提取文本内容
         text_contents = extract_text_from_json(json_file)
-        
+
         if not text_contents:
             print(f"  ⚠️  No valid text content found in {json_file}")
             continue
-        
+
         # 为每个文本内容创建文件
         for j, text_content in enumerate(text_contents):
             if not text_content or not isinstance(text_content, str) or not text_content.strip():
                 continue
-            
+
             # 最终验证文本（最小验证）
             final_text = validate_and_clean_text(text_content)
             if not final_text:
                 print(f"  ⚠️  Text content failed validation")
                 continue
-                
+
             # 创建文本文件名
             base_name = json_file.stem
             if len(text_contents) > 1:
                 temp_file = temp_dir / f"{base_name}_{j}.txt"
             else:
                 temp_file = temp_dir / f"{base_name}.txt"
-            
+
             try:
                 with open(temp_file, 'w', encoding='utf-8') as tf:
                     tf.write(final_text)
-                
+
                 # 验证写入的文件
                 if verify_text_file(temp_file):
                     text_paths.append(str(temp_file))
@@ -147,10 +147,10 @@ def create_text_files(json_files, cache_path_obj):
                 else:
                     print(f"  ❌ Failed validation: {temp_file.name}")
                     temp_file.unlink()  # 删除无效文件
-                    
+
             except Exception as e:
                 print(f"  ❌ Error creating {temp_file}: {e}")
-    
+
     print(f"\n✅ Successfully processed {processed_count} text contents from {len(json_files)} JSON files")
     return text_paths
 
@@ -159,10 +159,10 @@ def validate_and_clean_text(text):
     """完全保持原始文本，不做任何验证或清理"""
     if not isinstance(text, str):
         return None
-    
+
     if not text:
         return None
-    
+
     return text  # 完全保持原始文本
 
 
@@ -171,13 +171,13 @@ def verify_text_file(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        
+
         # 基本检查
         if not content or not content.strip():
             return False
-        
+
         return True
-        
+
     except Exception as e:
         print(f"  ⚠️  File verification failed: {e}")
         return False
@@ -224,16 +224,16 @@ def scan_json_files(base_dir, cache_path="./", mode="paths"):
         return False
 
     print(f"\nTotal found: {len(json_files)} files")
-    
+
     # 根据模式处理
     if mode == "texts":
         print("Mode: Extract text content and create text files...")
         text_paths = create_text_files(json_files, cache_path_obj)
-        
+
         if not text_paths:
             print("❌ No valid text content found in any JSON files!")
             return False
-        
+
         # 创建text_input.jsonl文件，包含文本文件路径
         try:
             with open(text_input_file, 'w', encoding='utf-8') as f:
@@ -248,7 +248,7 @@ def scan_json_files(base_dir, cache_path="./", mode="paths"):
         except Exception as e:
             print(f"❌ Error creating file: {e}")
             return False
-            
+
     else:
         print("Mode: Create file path index...")
         # 创建text_input.jsonl文件，包含JSON文件路径
@@ -271,7 +271,7 @@ def main():
     parser = argparse.ArgumentParser(description='Scan JSON/JSONL files and create input for text processing pipeline')
     parser.add_argument('input_dir', nargs='?', default='./', help='Input directory to scan (default: ./)')
     parser.add_argument('--cache', default='./', help='Cache directory path (default: ./)')
-    parser.add_argument('--mode', choices=['paths', 'texts'], default='texts', 
+    parser.add_argument('--mode', choices=['paths', 'texts'], default='texts',
                        help='Processing mode: "paths" for file paths only, "texts" for extract text content (default: texts)')
 
     args = parser.parse_args()
