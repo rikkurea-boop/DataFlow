@@ -1,0 +1,34 @@
+name: P09.06 RED validation
+
+on:
+  push:
+    branches:
+      - validation/p09-06-red-current
+
+jobs:
+  red:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 7573cb46d4cf92e642b238aaba6223c50eae90f5
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e .[test]
+      - name: Authoritative P09.06 RED
+        run: pytest -q test/cpu_only/test_local_vlm_json_schema_runtime.py
