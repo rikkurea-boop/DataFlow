@@ -1,0 +1,17 @@
+name: P08 G2T cp1252 RED
+
+on:
+  push:
+    branches:
+      - validation/p08-g2t-cp1252-red
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - run: python -m pytest -q test/cpu_only/test_text2model_merge_producer_cp1252.py
