@@ -1,0 +1,80 @@
+name: P08 PR538 input_dir BF13
+
+on:
+  push:
+    branches:
+      - validation/p08-pr538-input-dir-amendment
+    paths:
+      - '.github/workflows/p08_pr538_input_dir_bf13.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install lightweight runtime
+        run: python -m pip install -q pytest typer requests colorama appdirs
+      - name: Exact provenance and scope audit
+        run: |
+          test "$(git hash-object dataflow/cli_funcs/cli_text.py)" = '0a361d39dd07c210e2b52aaced82e3834d4e2f42'
+          test "$(git hash-object test/cpu_only/test_cli_helper_failure_exit.py)" = 'c7a86aed7ee967a5465ea509b7ed7b4eb358d23e'
+          test "$(git hash-object test/cpu_only/test_text2model_input_dir_boundary.py)" = '99f870b51e80d242f78972f20a6683f61591e4bc'
+          test "$(git diff --numstat 5b91ca83dd23017e197479231ef439047ca8222e HEAD -- dataflow/cli_funcs/cli_text.py)" = $'1\t2\tdataflow/cli_funcs/cli_text.py'
+          test -z "$(git diff --name-only 5b91ca83dd23017e197479231ef439047ca8222e HEAD -- dataflow | grep -v '^dataflow/cli_funcs/cli_text.py$' || true)"
+          test -z "$(git diff --name-only 5b91ca83dd23017e197479231ef439047ca8222e HEAD -- dataflow/cli.py dataflow/cli_funcs/cli_pdf.py)"
+          test "$(git diff --name-only 5b91ca83dd23017e197479231ef439047ca8222e HEAD -- test/cpu_only | sort)" = $'test/cpu_only/test_cli_helper_failure_exit.py\ntest/cpu_only/test_text2model_input_dir_boundary.py'
+          git diff --check 5b91ca83dd23017e197479231ef439047ca8222e HEAD -- dataflow/cli_funcs/cli_text.py test/cpu_only/test_cli_helper_failure_exit.py test/cpu_only/test_text2model_input_dir_boundary.py
+      - name: Boundary, compatibility, propagation, and input-path semantics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import importlib.util, inspect, sys, types, pytest
+          root = Path.cwd()
+          class Logger:
+              def info(self,*a,**k): pass
+              def error(self,*a,**k): pass
+              def warning(self,*a,**k): pass
+              def success(self,*a,**k): pass
+          dataflow=types.ModuleType('dataflow'); dataflow.__path__=[str(root/'dataflow')]; dataflow.get_logger=lambda: Logger(); sys.modules['dataflow']=dataflow
+          cf=types.ModuleType('dataflow.cli_funcs'); cf.__path__=[str(root/'dataflow'/'cli_funcs')]; cf.cli_env=lambda:None; cf.cli_init=lambda **k:None; sys.modules['dataflow.cli_funcs']=cf
+          v=types.ModuleType('dataflow.version'); v.__version__='test'; sys.modules['dataflow.version']=v
+          u=types.ModuleType('dataflow.cli_funcs.utils'); u._echo=lambda m,color=None: print(m); sys.modules['dataflow.cli_funcs.utils']=u
+          import dataflow.cli_funcs.cli_text as cli_text
+          import dataflow.cli as cli
+          assert inspect.signature(cli_text.cli_text2model_train).parameters['input_dir'].default == './'
+          bp=root/'test/cpu_only/test_text2model_input_dir_boundary.py'; s=importlib.util.spec_from_file_location('b',bp); b=importlib.util.module_from_spec(s); s.loader.exec_module(b)
+          tmp=root/'.tmp-bf13'; tmp.mkdir(exist_ok=True)
+          mp=pytest.MonkeyPatch(); b.test_text2model_train_explicit_input_dir_crosses_real_helper_boundary(mp,tmp); mp.undo()
+          mp=pytest.MonkeyPatch(); b.test_text2model_train_signature_preserves_default_and_old_positional_usage(mp); mp.undo()
+          lp=root/'test/cpu_only/test_cli_helper_failure_exit.py'; s=importlib.util.spec_from_file_location('l',lp); l=importlib.util.module_from_spec(s); s.loader.exec_module(l)
+          count=0
+          for t in (l.test_helper_false_exits_nonzero_without_duplicate_wrapper_error,l.test_helper_true_preserves_success,l.test_helper_exception_remains_nonzero):
+              for case in l.COMMANDS:
+                  mp=pytest.MonkeyPatch(); t(mp,*case); mp.undo(); count+=1
+          assert count==12
+          # Deeper than the repaired call boundary: prove custom input_dir is consumed by the real helper body.
+          sem=root/'.tmp-sem'; sem.mkdir(exist_ok=True); inp=sem/'custom-input'; inp.mkdir(exist_ok=True); cache=sem/'.cache'; cache.mkdir(exist_ok=True); cfg=cache/'train_config.yaml'; cfg.write_text('x: 1\n')
+          captured={}
+          cli_text.verify_environment=lambda: True
+          cli_text.get_dataflow_script_path=lambda name: Path('/controlled/merge.py')
+          def stop_after_merge(script_path, description, args=None, cwd=None):
+              captured['args']=list(args or []); return False
+          cli_text.run_script_with_args=stop_after_merge
+          old=cli_text.os.getcwd; cli_text.os.getcwd=lambda: str(sem)
+          try:
+              assert cli_text.cli_text2model_train(input_dir=str(inp), lf_yaml=str(cfg)) is False
+          finally:
+              cli_text.os.getcwd=old
+          assert captured['args'][0] == str(inp)
+          print('BF13_PASS boundary=2 legacy_matrix=12 input_dir_semantics=custom_path_consumed')
+          PY
+      - name: Compile changed Python files
+        run: python -m py_compile dataflow/cli_funcs/cli_text.py test/cpu_only/test_cli_helper_failure_exit.py test/cpu_only/test_text2model_input_dir_boundary.py
