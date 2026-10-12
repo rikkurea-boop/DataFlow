@@ -27,12 +27,8 @@ jobs:
           if "import pkgutil\n" not in text:
               text = text.replace("import os\n", "import os\nimport pkgutil\n", 1)
 
-          old = '''    def _get_all(self):
-              if None in self.loader_map.values():
-                  self._init_loaders()
-              for loader in self.loader_map.values():
-                  loader._import_all()
-          '''
+          start = text.index("    def _get_all(self):")
+          end = text.index("    def get_obj_map(self):", start)
           new = '''    def _get_all(self):
               for module_name, loader in self.loader_map.items():
                   if loader is None:
@@ -49,12 +45,9 @@ jobs:
                           loader.__path__, prefix=f"{loader.__name__}."
                       ):
                           importlib.import_module(module_info.name)
+
           '''
-
-          if old not in text:
-              raise SystemExit("expected _get_all block not found")
-
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          path.write_text(text[:start] + new + text[end:], encoding="utf-8")
           PY
       - name: Commit publication repair
         run: |
