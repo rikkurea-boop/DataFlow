@@ -1,0 +1,111 @@
+name: P05.02 installed-wheel reinvestigation
+
+on:
+  push:
+    branches:
+      - validation/p05-02-wheel-reinvestigation
+
+jobs:
+  build-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout validation harness
+        uses: actions/checkout@v4
+        with:
+          ref: validation/p05-02-wheel-reinvestigation
+          path: harness
+
+      - name: Checkout exact current upstream main
+        uses: actions/checkout@v4
+        with:
+          ref: 4b2a0b8abbf9988f20f309c1f241c90357914147
+          path: source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install wheel build frontend
+        run: python -m pip install --upgrade build
+
+      - name: Build exact current-main wheel
+        working-directory: source
+        run: python -m build --wheel --outdir dist
+
+      - name: Capture source artifact manifests
+        working-directory: source
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/p05-02-artifact
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+
+          artifact_dir = Path(os.environ["ARTIFACT_DIR"])
+          artifact_dir.mkdir(parents=True, exist_ok=True)
+
+          python_files = sorted(
+              path.as_posix()
+              for path in Path("dataflow").rglob("*.py")
+              if path.is_file()
+          )
+          scaffold_files = sorted(
+              path.as_posix()
+              for path in Path("dataflow/statics/scaffold").rglob("*")
+              if path.is_file()
+          )
+          (artifact_dir / "source_python_files.json").write_text(
+              json.dumps(python_files, indent=2), encoding="utf-8"
+          )
+          (artifact_dir / "source_scaffold_files.json").write_text(
+              json.dumps(scaffold_files, indent=2), encoding="utf-8"
+          )
+
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, got: {wheels}")
+          shutil.copy2(wheels[0], artifact_dir / wheels[0].name)
+          PY
+          cp ../harness/.github/p05_02_wheel_probe.py "$ARTIFACT_DIR/p05_02_wheel_probe.py"
+          ls -la "$ARTIFACT_DIR"
+
+      - name: Upload exact wheel and manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: p05-02-current-main-wheel
+          path: ${{ runner.temp }}/p05-02-artifact
+          if-no-files-found: error
+
+  installed-wheel:
+    needs: build-wheel
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Download exact current-main wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: p05-02-current-main-wheel
+          path: artifact
+
+      - name: Probe clean installed wheel only
+        env:
+          PYTHONUTF8: "1"
+        run: python artifact/p05_02_wheel_probe.py artifact
