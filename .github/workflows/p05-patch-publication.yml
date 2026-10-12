@@ -1,0 +1,66 @@
+name: P05.01 patch publication
+
+on:
+  push:
+    branches:
+      - validation/p05-01-patcher
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: publish/p05-01-prompt-registry-full-enumeration
+          fetch-depth: 0
+      - name: Apply minimal registry repair
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("dataflow/utils/registry.py")
+          text = path.read_text(encoding="utf-8")
+
+          if "import pkgutil\n" not in text:
+              text = text.replace("import os\n", "import os\nimport pkgutil\n", 1)
+
+          old = '''    def _get_all(self):
+              if None in self.loader_map.values():
+                  self._init_loaders()
+              for loader in self.loader_map.values():
+                  loader._import_all()
+          '''
+          new = '''    def _get_all(self):
+              for module_name, loader in self.loader_map.items():
+                  if loader is None:
+                      import_name = Path(module_name).stem if module_name.endswith(".py") else module_name
+                      module_path = f"dataflow.{self._name}.{import_name}"
+                      loader = importlib.import_module(module_path)
+                      self.loader_map[module_name] = loader
+
+                  import_all = getattr(loader, "_import_all", None)
+                  if callable(import_all):
+                      import_all()
+                  elif hasattr(loader, "__path__"):
+                      for module_info in pkgutil.walk_packages(
+                          loader.__path__, prefix=f"{loader.__name__}."
+                      ):
+                          importlib.import_module(module_info.name)
+          '''
+
+          if old not in text:
+              raise SystemExit("expected _get_all block not found")
+
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+      - name: Commit publication repair
+        run: |
+          git config user.name "Rikku_desu~"
+          git config user.email "rikkurea@gmail.com"
+          git add dataflow/utils/registry.py
+          git diff --cached --check
+          git commit -m "fix(registry): enumerate mixed prompt module trees"
+          git push origin HEAD:publish/p05-01-prompt-registry-full-enumeration
