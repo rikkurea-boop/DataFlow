@@ -1,0 +1,75 @@
+name: P08 G5 publication validation
+
+on:
+  push:
+    branches:
+      - validation/p08-g5-publication-windows
+
+jobs:
+  windows-boundary:
+    name: G5 boundary on Windows Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 50ab55cc66001166eb63fbc711e2c7a47bf6037d
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Run accepted G5 boundary and composition tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          pytest -q test/cpu_only/test_pdf2model_step2_cache_boundary.py test/cpu_only/test_pdf_detector_postcondition.py
+      - name: Compile changed production files
+        run: |
+          python -m py_compile dataflow/statics/pipelines/api_pipelines/pdf_vqa_extract_pipeline.py dataflow/statics/pipelines/gpu_pipelines/kbcleaning/kbcleaning_pipeline_vllm.py
+
+  linux-deep:
+    name: G5 exact-head CPU/API and diff audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 50ab55cc66001166eb63fbc711e2c7a47bf6037d
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          sudo apt-get clean
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Verify exact scope and whitespace
+        run: |
+          git diff --check 4b2a0b8abbf9988f20f309c1f241c90357914147 50ab55cc66001166eb63fbc711e2c7a47bf6037d
+          test "$(git diff --name-only 4b2a0b8abbf9988f20f309c1f241c90357914147 50ab55cc66001166eb63fbc711e2c7a47bf6037d | wc -l)" -eq 3
+          git diff --name-only 4b2a0b8abbf9988f20f309c1f241c90357914147 50ab55cc66001166eb63fbc711e2c7a47bf6037d
+      - name: Run CPU/API suite
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: pytest -m "cpu or api"
