@@ -1,0 +1,71 @@
+name: P07.03 GREEN validation
+
+on:
+  push:
+    branches:
+      - validation/p07-03-green
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Free up disk space on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Targeted regression and uncontended flush checks
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+        run: >-
+          pytest -q
+          test/cpu_only/test_lazy_file_storage_flush_concurrency.py
+          test/cpu_only/test_lazy_file_storage_flush.py::test_explicit_flush_step_can_persist_an_older_output
+          test/cpu_only/test_lazy_file_storage_flush.py::test_latest_output_can_be_updated_after_flushing
+      - name: Repeated deterministic race regression
+        if: runner.os == 'Linux' && matrix.python == '3.10'
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+        run: |
+          for i in {1..20}; do
+            pytest -q test/cpu_only/test_lazy_file_storage_flush_concurrency.py
+          done
+      - name: CPU/API suite
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+        run: pytest -m "cpu or api"
+      - name: Compile changed Python files
+        run: python -m py_compile dataflow/utils/storage.py test/cpu_only/test_lazy_file_storage_flush_concurrency.py
