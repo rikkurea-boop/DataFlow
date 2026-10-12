@@ -1,0 +1,21 @@
+name: P09.02 RED validation
+
+on:
+  push:
+    branches:
+      - validation/p09-02-red-current
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: acd50b2bd7bd87615509021f1886fb5371a3bd32
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependency
+        run: python -m pip install pytest
+      - name: Run accepted Perspective regression
+        run: python -m pytest -q test/cpu_only/test_perspective_serving_instantiation.py
