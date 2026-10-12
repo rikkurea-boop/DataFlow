@@ -1,0 +1,32 @@
+name: G2T producer compatibility
+
+on:
+  push:
+    branches:
+      - validation/p08-g2t-producer-compat
+
+jobs:
+  producer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Malformed and empty input compatibility
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/g2t-producer"
+          SCRIPT="$GITHUB_WORKSPACE/dataflow/cli_funcs/text2model_pipeline/merge_json_jsonl.py"
+          mkdir -p "$ROOT/malformed" "$ROOT/empty" "$ROOT/cache-malformed" "$ROOT/cache-empty"
+          printf '{not valid json}\n' > "$ROOT/malformed/bad.jsonl"
+          if python "$SCRIPT" "$ROOT/malformed" --cache "$ROOT/cache-malformed"; then
+            echo "malformed-only input unexpectedly succeeded" >&2
+            exit 1
+          fi
+          test ! -e "$ROOT/cache-malformed/.cache/gpu/text_input.jsonl"
+          if python "$SCRIPT" "$ROOT/empty" --cache "$ROOT/cache-empty"; then
+            echo "empty input unexpectedly succeeded" >&2
+            exit 1
+          fi
+          test ! -e "$ROOT/cache-empty/.cache/gpu/text_input.jsonl"
