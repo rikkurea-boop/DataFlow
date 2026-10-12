@@ -1,0 +1,73 @@
+name: P08 PR538 input_dir RED
+
+on:
+  push:
+    branches:
+      - validation/p08-pr538-input-dir-amendment
+    paths:
+      - '.github/workflows/p08_pr538_input_dir_red.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package and pytest
+        run: python -m pip install -q -e . pytest
+
+      - name: Verify exact accepted pre-fix state
+        run: |
+          test "$(git rev-parse 4e60dbb6fdd52f3e9970ff2f40fc961d40f5cc00^)" = '5b91ca83dd23017e197479231ef439047ca8222e'
+          test "$(git hash-object dataflow/cli_funcs/cli_text.py)" = 'efa77e8717bff971ffaa2aeddc8e1b7b0f280cc2'
+          test "$(git hash-object test/cpu_only/test_cli_helper_failure_exit.py)" = '932ac48688187a698555c71d16452db121cd50e4'
+
+      - name: Reproduce real helper TypeError and public CLI failure
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from typer.testing import CliRunner
+          import dataflow.cli_funcs.cli_text as cli_text
+          from dataflow.cli import app
+
+          reached = {'value': False}
+          def controlled_verify_environment():
+              reached['value'] = True
+              return False
+          cli_text.verify_environment = controlled_verify_environment
+
+          try:
+              cli_text.cli_text2model_train(input_dir='./controlled-input')
+          except TypeError as exc:
+              text = str(exc)
+              assert "unexpected keyword argument 'input_dir'" in text, text
+              print('DIRECT_TYPEERROR=' + text)
+          else:
+              raise AssertionError('real pre-fix helper unexpectedly accepted input_dir')
+          assert reached['value'] is False
+
+          result = CliRunner().invoke(app, ['text2model', 'train', './controlled-input'])
+          assert result.exit_code != 0
+          assert "unexpected keyword argument 'input_dir'" in result.output, result.output
+          assert reached['value'] is False
+          print('PUBLIC_CLI_RED=' + result.output.strip())
+          print('HELPER_BODY_REACHED=false')
+          PY
+
+      - name: Canonical boundary regression must be RED
+        run: |
+          set +e
+          python -m pytest -q test/cpu_only/test_text2model_input_dir_boundary.py
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          echo "BOUNDARY_REGRESSION_RED=PASS"
