@@ -16,44 +16,42 @@ jobs:
         with:
           ref: publish/p05-01-prompt-registry-full-enumeration
           fetch-depth: 0
-      - name: Apply minimal registry repair
+      - name: Repair publication indentation
         run: |
           python - <<'PY'
           from pathlib import Path
 
           path = Path("dataflow/utils/registry.py")
           text = path.read_text(encoding="utf-8")
-
-          if "import pkgutil\n" not in text:
-              text = text.replace("import os\n", "import os\nimport pkgutil\n", 1)
-
           start = text.index("    def _get_all(self):")
           end = text.index("    def get_obj_map(self):", start)
-          new = '''    def _get_all(self):
-              for module_name, loader in self.loader_map.items():
-                  if loader is None:
-                      import_name = Path(module_name).stem if module_name.endswith(".py") else module_name
-                      module_path = f"dataflow.{self._name}.{import_name}"
-                      loader = importlib.import_module(module_path)
-                      self.loader_map[module_name] = loader
-
-                  import_all = getattr(loader, "_import_all", None)
-                  if callable(import_all):
-                      import_all()
-                  elif hasattr(loader, "__path__"):
-                      for module_info in pkgutil.walk_packages(
-                          loader.__path__, prefix=f"{loader.__name__}."
-                      ):
-                          importlib.import_module(module_info.name)
-
-          '''
+          new = (
+              "    def _get_all(self):\n"
+              "        for module_name, loader in self.loader_map.items():\n"
+              "            if loader is None:\n"
+              "                import_name = Path(module_name).stem if module_name.endswith(\".py\") else module_name\n"
+              "                module_path = f\"dataflow.{self._name}.{import_name}\"\n"
+              "                loader = importlib.import_module(module_path)\n"
+              "                self.loader_map[module_name] = loader\n"
+              "\n"
+              "            import_all = getattr(loader, \"_import_all\", None)\n"
+              "            if callable(import_all):\n"
+              "                import_all()\n"
+              "            elif hasattr(loader, \"__path__\"):\n"
+              "                for module_info in pkgutil.walk_packages(\n"
+              "                    loader.__path__, prefix=f\"{loader.__name__}.\"\n"
+              "                ):\n"
+              "                    importlib.import_module(module_info.name)\n"
+              "\n"
+          )
           path.write_text(text[:start] + new + text[end:], encoding="utf-8")
           PY
-      - name: Commit publication repair
+          python -m py_compile dataflow/utils/registry.py
+      - name: Amend publication repair
         run: |
           git config user.name "Rikku_desu~"
           git config user.email "rikkurea@gmail.com"
           git add dataflow/utils/registry.py
           git diff --cached --check
-          git commit -m "fix(registry): enumerate mixed prompt module trees"
-          git push origin HEAD:publish/p05-01-prompt-registry-full-enumeration
+          git commit --amend --no-edit
+          git push --force-with-lease=refs/heads/publish/p05-01-prompt-registry-full-enumeration:f95cb9561413cf3b9ca9f8942d2c018aa4ab1d2a origin HEAD:refs/heads/publish/p05-01-prompt-registry-full-enumeration
