@@ -1,0 +1,26 @@
+name: P07.03 RED validation
+
+on:
+  push:
+    branches:
+      - validation/p07-03-red
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Run P07.03 regression
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+        run: pytest -q test/cpu_only/test_lazy_file_storage_flush_concurrency.py
