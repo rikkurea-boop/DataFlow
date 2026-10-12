@@ -1,0 +1,34 @@
+name: G2T boundary validation
+
+on:
+  push:
+    branches:
+      - validation/p08-g2t-red
+      - validation/p08-g2t-green
+    paths:
+      - "dataflow/**/*.py"
+      - "test/cpu_only/test_text2model_g2t_boundaries.py"
+      - ".github/workflows/g2t-boundary-validation.yml"
+
+jobs:
+  g2t:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Run G2T boundary regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          pytest -q test/cpu_only/test_text2model_g2t_boundaries.py
