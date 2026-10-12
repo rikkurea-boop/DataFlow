@@ -1,0 +1,22 @@
+name: P09.03 RED validation
+
+on:
+  push:
+    branches:
+      - validation/p09-03-red-current
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 66585671ebac292ad4feb4cf5e1d1b9fd8f163d5
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest only
+        run: python -m pip install pytest
+      - name: Authoritative P09.03 RED
+        run: pytest -q --confcutdir=test/cpu_only test/cpu_only/test_lightrag_dependency_scope.py
