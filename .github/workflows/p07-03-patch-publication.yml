@@ -1,0 +1,48 @@
+name: P07.03 patch publication
+
+on:
+  push:
+    branches:
+      - validation/p07-03-patcher
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: publish/p07-03-lazy-file-storage-flush-generation
+          fetch-depth: 0
+      - name: Apply minimal flush generation repair
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("dataflow/utils/storage.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''            os.replace(tmp_path, file_path)
+            with self._lock:
+                self._dirty_steps.discard(step)
+'''
+          new = '''            os.replace(tmp_path, file_path)
+            with self._lock:
+                if self._buffers.get(step) is df:
+                    self._dirty_steps.discard(step)
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one flush dirty-clear block, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+          python -m py_compile dataflow/utils/storage.py test/cpu_only/test_lazy_file_storage_flush_concurrency.py
+          git diff --check
+      - name: Commit publication repair
+        run: |
+          git config user.name "Rikku_desu~"
+          git config user.email "rikkurea@gmail.com"
+          git add dataflow/utils/storage.py
+          git diff --cached --check
+          git commit -m "fix(storage): preserve writes racing lazy flushes"
+          git push origin HEAD:publish/p07-03-lazy-file-storage-flush-generation
