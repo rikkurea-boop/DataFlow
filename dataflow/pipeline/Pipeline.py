@@ -626,6 +626,18 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
         super().__init__()
         
     def _compiled_forward(self, resume_step: int=0, batch_size: int|None=None, resume_from_last: bool=True, transactional_resume: bool=False):
+        """Execute streaming batches.
+
+        transactional_resume=True is opt-in for local CSV/JSONL streaming
+        storage with batch_size > 0 and resume_from_last=True. Each cooperating
+        operator must declare transaction_safe=True, provide a stable, JSON-
+        serializable transaction_signature() covering effective configuration,
+        and issue exactly one storage.write() per executed batch ([] is valid).
+        Operators must not modify managed files directly, launch detached
+        writers, or rely on exactly-once external side effects. Unverifiable
+        operators and incompatible legacy checkpoints fail closed.
+        Default transactional_resume=False preserves legacy behavior.
+        """
         if transactional_resume:
             if not resume_from_last or resume_step != 0:
                 raise ValueError("Transactional streaming requires resume_from_last=True and resume_step=0")
