@@ -187,33 +187,25 @@ def test_force_killed_process_rolls_back_persisted_batch(tmp_path, fmt):
     # Exercise real production pipeline/storage; os._exit cannot run normal
     # exception handling, so recovery occurs in a fresh parent-side instance.
     script = textwrap.dedent("""
+        import importlib.util
         import os
-        from dataflow.core import OperatorABC
-        from dataflow.pipeline import StreamBatchedPipelineABC
-        from dataflow.utils.storage import StreamBatchedFileStorage
-
-        class Crash(OperatorABC):
-            transaction_safe = True
-            def transaction_signature(self): return {}
-            def run(self, storage):
-                data = storage.read("dataframe")
-                storage.write(data)
-                if data["id"].tolist() == [2, 3]:
-                    os._exit(79)
-
-        class Pipeline(StreamBatchedPipelineABC):
-            def __init__(self, source, cache, fmt):
-                super().__init__()
-                self.storage = StreamBatchedFileStorage(source, cache, "p07_01", fmt)
-                self.op = Crash()
-            def forward(self): self.op.run(self.storage.step())
-
         import sys
-        p = Pipeline(*sys.argv[1:])
-        p.compile()
-        p.forward(batch_size=2, transactional_resume=True)
+
+        spec = importlib.util.spec_from_file_location("test_stream_transactional_resume", sys.argv[4])
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        operator = mod._Pass()
+        def crash_after_write(storage):
+            data = storage.read("dataframe")
+            storage.write(data)
+            if data["id"].tolist() == [2, 3]:
+                os._exit(79)
+        operator.run = crash_after_write
+        pipeline = mod._Pipeline(sys.argv[1], sys.argv[2], sys.argv[3], [operator])
+        pipeline.compile()
+        pipeline.forward(batch_size=2, transactional_resume=True)
     """)
-    result = subprocess.run([sys.executable, "-c", script, str(source), str(cache), fmt],
+    result = subprocess.run([sys.executable, "-c", script, str(source), str(cache), fmt, __file__],
                             capture_output=True, text=True)
     assert result.returncode == 79, result.stderr
     _run(source, cache, fmt, [_Pass()])
