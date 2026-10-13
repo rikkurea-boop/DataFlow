@@ -1,0 +1,79 @@
+name: P07.04 patch publication branch
+
+on:
+  push:
+    branches:
+      - validation/p07-04-patcher
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: publish/p07-04-batched-storage-zero-row
+          fetch-depth: 0
+      - name: Apply minimal zero-row storage repair
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("dataflow/utils/storage.py")
+          text = path.read_text(encoding="utf-8")
+
+          init_anchor = '''        if cache_type not in ["jsonl", "csv"]:
+              raise ValueError(f"BatchedFileStorage only supports 'jsonl' and 'csv' cache types, got: {cache_type}")
+          
+          def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:
+          '''
+          init_replacement = '''        if cache_type not in ["jsonl", "csv"]:
+              raise ValueError(f"BatchedFileStorage only supports 'jsonl' and 'csv' cache types, got: {cache_type}")
+
+          def _load_local_file(self, file_path: str, file_type: str) -> pd.DataFrame:
+              if file_type == "csv" and os.path.exists(file_path):
+                  with open(file_path, "r", encoding="utf-8") as f:
+                      if not f.read().strip():
+                          return pd.DataFrame()
+              return super()._load_local_file(file_path, file_type)
+          
+          def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:
+          '''
+          if init_anchor not in text:
+              raise SystemExit("BatchedFileStorage init/read anchor not found")
+          text = text.replace(init_anchor, init_replacement, 1)
+
+          list_anchor = '''        if isinstance(data, list):
+              if len(data) > 0 and isinstance(data[0], dict):
+                  # 清洗列表中的每个字典
+                  cleaned_data = [clean_surrogates(item) for item in data]
+                  dataframe = pd.DataFrame(cleaned_data)
+              else:
+                  raise ValueError(f"Unsupported data type: {type(data[0])}")
+          elif isinstance(data, pd.DataFrame):
+          '''
+          list_replacement = '''        if isinstance(data, list):
+              if not data:
+                  dataframe = pd.DataFrame()
+              elif isinstance(data[0], dict):
+                  # 清洗列表中的每个字典
+                  cleaned_data = [clean_surrogates(item) for item in data]
+                  dataframe = pd.DataFrame(cleaned_data)
+              else:
+                  raise ValueError(f"Unsupported data type: {type(data[0])}")
+          elif isinstance(data, pd.DataFrame):
+          '''
+          if list_anchor not in text:
+              raise SystemExit("BatchedFileStorage list conversion anchor not found")
+          text = text.replace(list_anchor, list_replacement, 1)
+          path.write_text(text, encoding="utf-8")
+      - name: Commit repair
+        run: |
+          git config user.name "Rikku_desu~"
+          git config user.email "rikkurea@gmail.com"
+          git add dataflow/utils/storage.py
+          git diff --cached --check
+          git commit -m "fix(storage): preserve zero-row batched list datasets"
+          git push origin HEAD:publish/p07-04-batched-storage-zero-row
