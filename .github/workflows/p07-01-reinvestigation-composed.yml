@@ -1,0 +1,30 @@
+name: P07.01 reinvestigation composed storage
+
+on:
+  push:
+    branches:
+      - validation/p07-01-reinvestigation-composed
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: P07.01 stream retry resume contract
+        run: pytest -q test/cpu_only/test_stream_batched_retry_resume_contract.py
+      - name: Py compile
+        if: always()
+        run: python -m py_compile test/cpu_only/test_stream_batched_retry_resume_contract.py dataflow/utils/storage.py dataflow/pipeline/Pipeline.py
+      - name: Diff check
+        if: always()
+        run: git diff --check d92c2e414570d594b5b58ee5cc45b10b7b58d2d6 HEAD
