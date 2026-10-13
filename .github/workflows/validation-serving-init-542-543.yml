@@ -1,0 +1,54 @@
+name: Validate consolidated Perspective and LightRAG serving
+
+on:
+  push:
+    branches:
+      - validation/serving-init-542-543-20261013
+
+jobs:
+  validate:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.10'
+          - os: windows-latest
+            python: '3.12'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Short Windows temp path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'D:\t' | Out-Null
+          "TEMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: Focused Perspective and LightRAG regression tests
+        run: pytest -q test/cpu_only/test_perspective_serving_instantiation.py test/cpu_only/test_lightrag_dependency_scope.py
+      - name: Full CPU/API suite
+        run: pytest -m "cpu or api"
+      - name: Compile changed code and tests
+        run: python -m py_compile dataflow/serving/google_api_serving.py dataflow/serving/light_rag_serving.py test/cpu_only/test_perspective_serving_instantiation.py test/cpu_only/test_lightrag_dependency_scope.py
+      - name: Diff check
+        run: git diff --check 05a7d9edd8a09c3a7537414f757d1049e562b464 HEAD
