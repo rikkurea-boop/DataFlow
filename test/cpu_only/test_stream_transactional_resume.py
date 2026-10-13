@@ -337,7 +337,7 @@ def test_competing_process_lock_and_release_after_forced_exit(tmp_path, fmt):
     script = textwrap.dedent("""
         import importlib.util, sys
         from dataflow.utils.stream_transaction import StreamTransactionCoordinator
-        spec = importlib.util.spec_from_file_location("p07_lock_test", sys.argv[4])
+        spec = importlib.util.spec_from_file_location("test_stream_transactional_resume", sys.argv[4])
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         p = mod._Pipeline(sys.argv[1], sys.argv[2], sys.argv[3], [mod._Pass()])
