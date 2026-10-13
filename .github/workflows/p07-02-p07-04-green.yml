@@ -1,0 +1,55 @@
+name: P07.02 + P07.04 composition GREEN
+
+on:
+  push:
+    branches:
+      - validation/p07-02-p07-04-green
+
+jobs:
+  green:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.10'
+          - os: windows-latest
+            python: '3.12'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: d92c2e414570d594b5b58ee5cc45b10b7b58d2d6
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Short Windows temp path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'D:\t' | Out-Null
+          "TEMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: P07.02 and full P07.04 targeted regressions
+        run: pytest -q test/cpu_only/test_batched_storage_cache_invalidation.py test/cpu_only/test_batched_storage_zero_row_contract.py test/cpu_only/test_remote_batch_slicing.py
+      - name: CPU/API suite
+        run: pytest -m "cpu or api"
+      - name: Py compile
+        run: python -m py_compile dataflow/utils/storage.py test/cpu_only/test_batched_storage_cache_invalidation.py test/cpu_only/test_batched_storage_zero_row_contract.py
+      - name: Composition diff check
+        run: git diff --check 4b2a0b8abbf9988f20f309c1f241c90357914147 HEAD
