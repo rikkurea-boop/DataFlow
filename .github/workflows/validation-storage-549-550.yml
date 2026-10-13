@@ -1,0 +1,31 @@
+name: Validate combined storage #549 + #550
+
+on:
+  push:
+    branches:
+      - validation/storage-549-550-20261013
+
+jobs:
+  storage:
+    name: Storage regression RED/PASS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: Storage race and zero-row contract
+        run: pytest -q test/cpu_only/test_lazy_file_storage_flush_concurrency.py test/cpu_only/test_lazy_file_storage_two_flush_order.py test/cpu_only/test_batched_storage_zero_row_contract.py
+      - name: Compile changed sources
+        if: always()
+        run: python -m py_compile dataflow/utils/storage.py test/cpu_only/test_lazy_file_storage_two_flush_order.py
+      - name: Check diff
+        if: always()
+        run: git diff --check 05a7d9edd8a09c3a7537414f757d1049e562b464 HEAD
