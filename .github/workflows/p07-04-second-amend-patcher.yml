@@ -24,27 +24,29 @@ jobs:
 
           path = Path("dataflow/utils/storage.py")
           text = path.read_text(encoding="utf-8")
-          old = '''        elif self.cache_type == "csv":
-              if self.batch_step == 0:
-                  dataframe.to_csv(file_path, index=False)
-              else:
-                  dataframe.to_csv(file_path, index=False, header=False, mode='a')
-          else:
-'''
-          new = '''        elif self.cache_type == "csv":
-              if dataframe.empty and len(dataframe.columns) == 0:
-                  if self.batch_step == 0:
-                      open(file_path, 'w', encoding='utf-8').close()
-              else:
-                  write_header = (
-                      self.batch_step == 0
-                      or not os.path.exists(file_path)
-                      or os.path.getsize(file_path) == 0
-                  )
-                  open_mode = 'w' if self.batch_step == 0 else 'a'
-                  dataframe.to_csv(file_path, index=False, header=write_header, mode=open_mode)
-          else:
-'''
+          old = (
+              '        elif self.cache_type == "csv":\n'
+              '            if self.batch_step == 0:\n'
+              '                dataframe.to_csv(file_path, index=False)\n'
+              '            else:\n'
+              "                dataframe.to_csv(file_path, index=False, header=False, mode='a')\n"
+              '        else:\n'
+          )
+          new = (
+              '        elif self.cache_type == "csv":\n'
+              '            if dataframe.empty and len(dataframe.columns) == 0:\n'
+              '                if self.batch_step == 0:\n'
+              "                    open(file_path, 'w', encoding='utf-8').close()\n"
+              '            else:\n'
+              '                write_header = (\n'
+              '                    self.batch_step == 0\n'
+              '                    or not os.path.exists(file_path)\n'
+              '                    or os.path.getsize(file_path) == 0\n'
+              '                )\n'
+              "                open_mode = 'w' if self.batch_step == 0 else 'a'\n"
+              '                dataframe.to_csv(file_path, index=False, header=write_header, mode=open_mode)\n'
+              '        else:\n'
+          )
           if text.count(old) != 1:
               raise SystemExit(f"expected exactly one target block, found {text.count(old)}")
           path.write_text(text.replace(old, new), encoding="utf-8")
