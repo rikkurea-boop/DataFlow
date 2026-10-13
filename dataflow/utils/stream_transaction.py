@@ -367,6 +367,8 @@ class StreamTransactionCoordinator:
             raise TransactionError("Manifest commit uncertain; state reconciled, retry from durable cursor")
         self.manifest = state
         self.failed = False
+        # Invalidate stage-local and shared shallow-copy caches after commit.
+        self._invalidate()
 
     def commit(self, stage, batch):
         tx = self.active
