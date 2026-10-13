@@ -35,6 +35,13 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v7
+      - name: Use short Windows temp path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path D:\t | Out-Null
+          "TMP=D:\t" >> $env:GITHUB_ENV
+          "TEMP=D:\t" >> $env:GITHUB_ENV
       - name: Install dependencies
         shell: bash
         run: |
