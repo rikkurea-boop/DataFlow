@@ -1,0 +1,54 @@
+name: Validate P08 cache routing 540 + 541
+
+on:
+  push:
+    branches:
+      - validation/p08-cache-routing-540-541-20261013
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.10'
+          - os: windows-latest
+            python: '3.12'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Short Windows temp path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'D:\t' | Out-Null
+          "TEMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: Focused Text2Model and PDF2Model cache regressions
+        run: pytest -q test/cpu_only/test_cli_helper_failure_exit.py test/cpu_only/test_text2model_g2t_boundaries.py test/cpu_only/test_text2model_g2t_compatibility.py test/cpu_only/test_text2model_merge_producer.py test/cpu_only/test_text2model_merge_producer_cp1252.py test/cpu_only/test_pdf2model_step2_cache_boundary.py
+      - name: Full CPU/API suite
+        run: pytest -m "cpu or api"
+      - name: Python compilation
+        run: python -m py_compile dataflow/cli.py dataflow/cli_funcs/cli_text.py dataflow/cli_funcs/text2model_pipeline/llama_factory_trainer.py dataflow/cli_funcs/text2model_pipeline/merge_json_jsonl.py dataflow/cli_funcs/text2model_pipeline/text_to_qa_pipeline.py dataflow/statics/pipelines/api_pipelines/pdf_vqa_extract_pipeline.py dataflow/statics/pipelines/gpu_pipelines/kbcleaning/kbcleaning_pipeline_vllm.py
+      - name: Diff whitespace audit
+        run: git diff --check 05a7d9edd8a09c3a7537414f757d1049e562b464 HEAD
