@@ -1,0 +1,61 @@
+name: P07.04 second amendment patcher
+
+on:
+  push:
+    branches:
+      - validation/p07-04-second-amend-patcher
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: publish/p07-04-batched-storage-zero-row
+          fetch-depth: 0
+      - name: Apply narrow CSV multi-batch repair
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("dataflow/utils/storage.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''        elif self.cache_type == "csv":
+              if self.batch_step == 0:
+                  dataframe.to_csv(file_path, index=False)
+              else:
+                  dataframe.to_csv(file_path, index=False, header=False, mode='a')
+          else:
+'''
+          new = '''        elif self.cache_type == "csv":
+              if dataframe.empty and len(dataframe.columns) == 0:
+                  if self.batch_step == 0:
+                      open(file_path, 'w', encoding='utf-8').close()
+              else:
+                  write_header = (
+                      self.batch_step == 0
+                      or not os.path.exists(file_path)
+                      or os.path.getsize(file_path) == 0
+                  )
+                  open_mode = 'w' if self.batch_step == 0 else 'a'
+                  dataframe.to_csv(file_path, index=False, header=write_header, mode=open_mode)
+          else:
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one target block, found {text.count(old)}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          git diff --check
+          git diff -- dataflow/utils/storage.py
+      - name: Commit publication repair
+        shell: bash
+        run: |
+          git config user.name "Rikku_desu~"
+          git config user.email "rikkurea@gmail.com"
+          git add dataflow/utils/storage.py
+          git commit -m "fix(storage): preserve CSV header after empty leading batches"
+          git push origin HEAD:publish/p07-04-batched-storage-zero-row
