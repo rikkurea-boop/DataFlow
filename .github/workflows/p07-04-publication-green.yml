@@ -1,0 +1,38 @@
+name: P07.04 publication GREEN
+
+on:
+  push:
+    branches:
+      - validation/p07-04-publication-green
+
+jobs:
+  green:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.10'
+          - os: windows-latest
+            python: '3.12'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: Targeted zero-row boundary regression
+        run: pytest -q test/cpu_only/test_batched_storage_zero_row_contract.py
+      - name: CPU and API suite
+        run: pytest -m "cpu or api"
+      - name: Compile changed Python files
+        run: python -m py_compile dataflow/utils/storage.py test/cpu_only/test_batched_storage_zero_row_contract.py
