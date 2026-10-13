@@ -653,34 +653,35 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
                 if batch == total_batches:
                     coordinator.transition(stage)
                     continue
+
                 storage.batch_step = batch
                 stream = storage.iter_chunks()
                 try:
                     for _ in range(batch):
                         if next(stream, None) is None:
                             raise TransactionError("Input stream shorter than committed cursor")
-                    chunk = next(stream, None)
-                finally:
-                    if "chunk" not in locals() and hasattr(stream, "close"):
-                        stream.close()
-                if chunk is None:
-                    raise TransactionError("Input stream shorter than manifest row count")
-                storage._current_streaming_chunk = chunk
-                coordinator.begin(stage, batch)
-                try:
-                    node.op_obj.run(storage=storage, **node.kwargs)
-                    coordinator.commit(stage, batch)
-                except BaseException:
-                    coordinator.abort()
-                    raise
+                    while coordinator.manifest["batch"] < total_batches:
+                        current_batch = coordinator.manifest["batch"]
+                        chunk = next(stream, None)
+                        if chunk is None:
+                            raise TransactionError("Input stream shorter than manifest row count")
+                        storage._current_streaming_chunk = chunk
+                        coordinator.begin(stage, current_batch)
+                        try:
+                            node.op_obj.run(storage=storage, **node.kwargs)
+                            coordinator.commit(stage, current_batch)
+                        except BaseException:
+                            coordinator.abort()
+                            raise
+                        finally:
+                            storage._current_streaming_chunk = None
+                        storage.batch_step = coordinator.manifest["batch"]
                 finally:
                     storage._current_streaming_chunk = None
                     if hasattr(stream, "close"):
                         stream.close()
-                    if "chunk" in locals():
-                        del chunk
-                storage.batch_step = coordinator.manifest["batch"]
-            return None
+                coordinator.transition(stage)
+        return None
 
     def _legacy_stream_forward(self, resume_step: int=0, batch_size: int|None=None, resume_from_last: bool=True):
         """
