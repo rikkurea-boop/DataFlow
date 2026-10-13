@@ -1,0 +1,57 @@
+name: P07.04 CSV round-trip RED
+
+on:
+  push:
+    branches:
+      - validation/p07-04-csv-roundtrip-red
+
+jobs:
+  csv-red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: Apply only empty-list acceptance
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("dataflow/utils/storage.py")
+          text = path.read_text(encoding="utf-8")
+          before, marker, after = text.partition("class BatchedFileStorage(FileStorage):")
+          if not marker:
+              raise SystemExit("BatchedFileStorage marker missing")
+          old = (
+              '        if isinstance(data, list):\n'
+              '            if len(data) > 0 and isinstance(data[0], dict):\n'
+              '                # 清洗列表中的每个字典\n'
+              '                cleaned_data = [clean_surrogates(item) for item in data]\n'
+              '                dataframe = pd.DataFrame(cleaned_data)\n'
+              '            else:\n'
+              '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
+              '        elif isinstance(data, pd.DataFrame):\n'
+          )
+          new = (
+              '        if isinstance(data, list):\n'
+              '            if not data:\n'
+              '                dataframe = pd.DataFrame()\n'
+              '            elif isinstance(data[0], dict):\n'
+              '                # 清洗列表中的每个字典\n'
+              '                cleaned_data = [clean_surrogates(item) for item in data]\n'
+              '                dataframe = pd.DataFrame(cleaned_data)\n'
+              '            else:\n'
+              '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
+              '        elif isinstance(data, pd.DataFrame):\n'
+          )
+          if old not in after:
+              raise SystemExit("Batched list anchor missing")
+          after = after.replace(old, new, 1)
+          path.write_text(before + marker + after, encoding="utf-8")
+      - name: Prove format-specific round-trip behavior
+        run: pytest -vv test/cpu_only/test_batched_storage_zero_row_contract.py -k zero_row_list_round_trips
