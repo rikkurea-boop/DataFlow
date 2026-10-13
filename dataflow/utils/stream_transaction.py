@@ -90,6 +90,8 @@ class StreamTransactionCoordinator:
         self.registered = {}
         self.paths = []
         self._lock_handle = None
+        self._lock_acquired = False
+        self._hashers = {}
         self.active = None
         self.failed = False
         self.manifest = None
@@ -165,6 +167,7 @@ class StreamTransactionCoordinator:
             else:
                 import fcntl
                 fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_acquired = True
             self._open_manifest()
             for node in self.nodes:
                 node.storage._stream_transaction = self
@@ -176,6 +179,14 @@ class StreamTransactionCoordinator:
     def _close_lock(self):
         if self._lock_handle is not None:
             try:
+                if self._lock_acquired:
+                    self._unlock_handle()
+            finally:
+                self._lock_handle.close()
+                self._lock_handle = None
+                self._lock_acquired = False
+
+    def _unlock_handle(self):
                 self._lock_handle.seek(0)
                 if os.name == "nt":
                     import msvcrt
@@ -183,9 +194,6 @@ class StreamTransactionCoordinator:
                 else:
                     import fcntl
                     fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
-            finally:
-                self._lock_handle.close()
-                self._lock_handle = None
 
     def __exit__(self, exc_type, exc, tb):
         for node in self.nodes:
@@ -270,6 +278,7 @@ class StreamTransactionCoordinator:
 
     def reconcile(self):
         state = self._read_manifest()
+        recovered_hashers = {}
         for index, item in enumerate(state["outputs"]):
             path = self.paths[index]
             offset = item["offset"]
@@ -278,20 +287,32 @@ class StreamTransactionCoordinator:
                     raise TransactionError("Committed output file is missing")
                 if item["sha256"] != _digest(b"") or item["rows"] != 0 or item["header"]:
                     raise TransactionError("Missing output conflicts with manifest")
+                recovered_hashers[index] = hashlib.sha256()
                 continue
             if path.is_symlink():
                 raise TransactionError("Output replaced by symlink")
             size = path.stat().st_size
             if size < offset:
                 raise TransactionError("Committed output is shorter than manifest")
-            if _hash_file(path, offset) != item["sha256"]:
+            sha = hashlib.sha256()
+            with open(path, "rb") as output:
+                remaining = offset
+                while remaining:
+                    chunk = output.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise TransactionError("Committed output prefix missing")
+                    sha.update(chunk)
+                    remaining -= len(chunk)
+            if sha.hexdigest() != item["sha256"]:
                 raise TransactionError("Committed output prefix has changed")
+            recovered_hashers[index] = sha
             if size > offset:
                 with open(path, "r+b") as output:
                     output.truncate(offset)
                     output.flush()
                     os.fsync(output.fileno())
         self.manifest = state
+        self._hashers = recovered_hashers
         self.active = None
         self.failed = False
         self._invalidate()
@@ -305,7 +326,7 @@ class StreamTransactionCoordinator:
     def begin(self, stage, batch):
         self._check(stage, batch)
         self.active = {"stage": stage, "batch": batch, "writes": 0,
-                       "error": False, "pending": None}
+                       "error": False, "pending": None, "hasher": None}
 
     def write(self, storage, data):
         tx = self.active
@@ -346,6 +367,9 @@ class StreamTransactionCoordinator:
                 with open(path, "ab") as handle:
                     handle.write(raw)
                     handle.flush()
+            pending_hasher = self._hashers[index].copy()
+            pending_hasher.update(raw)
+            tx["hasher"] = pending_hasher
             tx["pending"] = {"rows": meta["rows"] + len(frame), "header": header,
                              "columns": columns, "offset": meta["offset"] + len(raw),
                              "sha256": None}
@@ -383,12 +407,15 @@ class StreamTransactionCoordinator:
                 os.fsync(handle.fileno())
         if (path.stat().st_size if path.exists() else 0) != pending["offset"]:
             raise TransactionError("Output changed before commit")
-        pending["sha256"] = _hash_file(path, pending["offset"]) if pending["offset"] else _digest(b"")
+        pending["sha256"] = tx["hasher"].hexdigest()
         nxt = json.loads(_json(self.manifest))
         nxt["generation"] += 1
         nxt["outputs"][stage] = pending
         nxt["batch"] = batch + 1
         self._commit(nxt)
+        # The manifest now commits exactly the bytes represented by this hasher.
+        # An indeterminate commit takes the exception/reconcile path instead.
+        self._hashers[stage] = tx["hasher"]
 
     def transition(self, stage):
         self._check(stage, self.manifest["batch"])
