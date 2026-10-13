@@ -95,7 +95,6 @@ class StreamTransactionCoordinator:
         self.active = None
         self.failed = False
         self.manifest = None
-        self._preflight()
 
     def _preflight(self):
         from dataflow.utils.storage import StreamBatchedFileStorage
@@ -168,6 +167,8 @@ class StreamTransactionCoordinator:
                 import fcntl
                 fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._lock_acquired = True
+            # Validate output ownership after acquiring the single-writer lock.
+            self._preflight()
             self._open_manifest()
             for node in self.nodes:
                 node.storage._stream_transaction = self
@@ -187,13 +188,13 @@ class StreamTransactionCoordinator:
                 self._lock_acquired = False
 
     def _unlock_handle(self):
-                self._lock_handle.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(self._lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
+        self._lock_handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(self._lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
 
     def __exit__(self, exc_type, exc, tb):
         for node in self.nodes:
