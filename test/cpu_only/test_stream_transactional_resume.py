@@ -343,26 +343,23 @@ def test_competing_process_lock_and_release_after_forced_exit(tmp_path, fmt):
         p = mod._Pipeline(sys.argv[1], sys.argv[2], sys.argv[3], [mod._Pass()])
         p.compile()
         with StreamTransactionCoordinator(p.op_nodes_list[1:-1], 2):
-            print("P07_LOCK_ACQUIRED", flush=True)
+            from pathlib import Path
+            Path(sys.argv[5]).write_text("acquired", encoding="utf-8")
             sys.stdin.readline()
     """)
+    marker = tmp_path / "writer-ready"
     worker = subprocess.Popen(
-        [sys.executable, "-c", script, str(source), str(cache), fmt, __file__],
+        [sys.executable, "-c", script, str(source), str(cache), fmt, __file__, str(marker)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True,
     )
     try:
-        # compile() emits logger output before the child publishes readiness.
-        # Never call stderr.read() while the child is alive: that would block.
-        marker_seen = False
-        for _ in range(100):
-            line = worker.stdout.readline()
-            if not line:
-                break
-            if "P07_LOCK_ACQUIRED" in line:
-                marker_seen = True
-                break
-        assert marker_seen, "Lock holder exited without readiness marker"
+        # File-based readiness avoids blocking on stdout/stderr log buffers.
+        import time
+        deadline = time.monotonic() + 30
+        while not marker.exists() and worker.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert marker.exists(), "Lock holder failed to signal readiness"
         # The second process must not reach operator.run or the manifest writer.
         with pytest.raises((TransactionError, OSError)):
             _run(source, cache, fmt, [_Pass()])
