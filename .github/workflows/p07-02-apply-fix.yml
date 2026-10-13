@@ -1,0 +1,41 @@
+name: P07.02 apply publication fix
+
+on:
+  push:
+    branches:
+      - validation/p07-02-patcher
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: publish/p07-02-batched-storage-cache-invalidation
+          fetch-depth: 0
+      - name: Apply minimal cache invalidation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('dataflow/utils/storage.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        else:\n            raise ValueError(f"Unsupported file type: {self.cache_type}, output file should end with jsonl, csv")\n        \n        return file_path\n'''
+          new = '''        else:\n            raise ValueError(f"Unsupported file type: {self.cache_type}, output file should end with jsonl, csv")\n        \n        self._dataframe_buffer.pop(self.operator_step + 1, None)\n        return file_path\n'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one BatchedFileStorage write tail, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- dataflow/utils/storage.py
+      - name: Commit publication fix
+        run: |
+          git config user.name 'Rikku_desu~'
+          git config user.email 'rikkurea@gmail.com'
+          git add dataflow/utils/storage.py
+          git commit -m 'fix(storage): invalidate stale batched output cache'
+          git push origin HEAD:publish/p07-02-batched-storage-cache-invalidation
