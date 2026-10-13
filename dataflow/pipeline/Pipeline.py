@@ -625,7 +625,64 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
     def __init__(self):
         super().__init__()
         
-    def _compiled_forward(self, resume_step: int=0, batch_size: int|None=None, resume_from_last: bool=True):
+    def _compiled_forward(self, resume_step: int=0, batch_size: int|None=None, resume_from_last: bool=True, transactional_resume: bool=False):
+        if transactional_resume:
+            if not resume_from_last or resume_step != 0:
+                raise ValueError("Transactional streaming requires resume_from_last=True and resume_step=0")
+            return self._transactional_forward(batch_size)
+        return self._legacy_stream_forward(resume_step, batch_size, resume_from_last)
+
+    def _transactional_forward(self, batch_size):
+        from dataflow.utils.stream_transaction import StreamTransactionCoordinator
+        from dataflow.utils.stream_transaction import TransactionError
+
+        if not self.compiled:
+            raise RuntimeError("Pipeline is not compiled yet")
+        nodes = [node for node in self.op_nodes_list if node.op_obj is not None]
+        with StreamTransactionCoordinator(nodes, batch_size) as coordinator:
+            while coordinator.manifest["stage"] < len(nodes):
+                stage = coordinator.manifest["stage"]
+                node = nodes[stage]
+                storage = node.storage
+                storage.batch_size = batch_size
+                batch = coordinator.manifest["batch"]
+                count = coordinator.input_rows(stage)
+                total_batches = (count + batch_size - 1) // batch_size
+                if batch > total_batches:
+                    raise TransactionError("Committed cursor exceeds stage input")
+                if batch == total_batches:
+                    coordinator.transition(stage)
+                    continue
+                storage.batch_step = batch
+                stream = storage.iter_chunks()
+                try:
+                    for _ in range(batch):
+                        if next(stream, None) is None:
+                            raise TransactionError("Input stream shorter than committed cursor")
+                    chunk = next(stream, None)
+                finally:
+                    if "chunk" not in locals() and hasattr(stream, "close"):
+                        stream.close()
+                if chunk is None:
+                    raise TransactionError("Input stream shorter than manifest row count")
+                storage._current_streaming_chunk = chunk
+                coordinator.begin(stage, batch)
+                try:
+                    node.op_obj.run(storage=storage, **node.kwargs)
+                    coordinator.commit(stage, batch)
+                except BaseException:
+                    coordinator.abort()
+                    raise
+                finally:
+                    storage._current_streaming_chunk = None
+                    if hasattr(stream, "close"):
+                        stream.close()
+                    if "chunk" in locals():
+                        del chunk
+                storage.batch_step = coordinator.manifest["batch"]
+            return None
+
+    def _legacy_stream_forward(self, resume_step: int=0, batch_size: int|None=None, resume_from_last: bool=True):
         """
             resume_step (int): resume inference from this step
             batch_size (int|None): if set, run the pipeline in batch mode with this batch size
