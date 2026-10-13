@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,10 @@ import pandas as pd
 
 class TransactionError(RuntimeError):
     """Transactional streaming cannot safely continue."""
+
+# Lifecycle failures after durable stage commits require a process restart.
+# This guard is process-local; a new process may recover from the manifest.
+_UNSAFE_LIFECYCLE_WORKSPACES = set()
 
 
 def _digest(value):
@@ -98,6 +103,40 @@ class StreamTransactionCoordinator:
 
     def _preflight(self):
         from dataflow.utils.storage import StreamBatchedFileStorage
+        if self.root in _UNSAFE_LIFECYCLE_WORKSPACES:
+            raise TransactionError(
+                "Previous stage lifecycle cleanup failed; restart the process before resuming"
+            )
+        # Async shutdown/cleanup needs an event-loop contract which the sync
+        # compiled streaming pipeline cannot safely supply. Reject BEFORE work.
+        seen_servings = set()
+        previous_serving = None
+        for node in self.nodes:
+            shutdown = getattr(node.op_obj, "shutdown", None)
+            if shutdown is not None and (
+                inspect.iscoroutinefunction(shutdown)
+                or inspect.isasyncgenfunction(shutdown)
+            ):
+                raise TransactionError("Async operator shutdown is unsupported in transactional mode")
+            serving = node.llm_serving
+            if serving is not None:
+                cleanup = getattr(serving, "cleanup", None)
+                if not callable(cleanup):
+                    raise TransactionError("Serving requires callable synchronous cleanup()")
+                if inspect.iscoroutinefunction(cleanup) or inspect.isasyncgenfunction(cleanup):
+                    raise TransactionError(
+                        "Async serving cleanup is unsupported in synchronous transactional mode"
+                    )
+            # A -> B -> A would reuse A after it has been cleaned up. Do not
+            # assume cleaned serving instances are restartable.
+            identity = id(serving) if serving is not None else None
+            if identity != previous_serving and identity in seen_servings:
+                raise TransactionError(
+                    "Non-contiguous serving reuse (A -> B -> A) is unsupported"
+                )
+            if identity is not None:
+                seen_servings.add(identity)
+            previous_serving = identity
         first = self.nodes[0].storage
         source = Path(first.first_entry_file_name).expanduser().resolve()
         if not source.is_file() or source.suffix.lower() not in (".jsonl", ".csv"):
@@ -201,6 +240,10 @@ class StreamTransactionCoordinator:
             if getattr(node.storage, "_stream_transaction", None) is self:
                 del node.storage._stream_transaction
         self._close_lock()
+
+    def mark_lifecycle_unsafe(self):
+        """Block further transactions on this workspace within this process."""
+        _UNSAFE_LIFECYCLE_WORKSPACES.add(self.root)
 
     def _initial(self):
         return {
