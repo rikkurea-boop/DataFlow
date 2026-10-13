@@ -1,0 +1,52 @@
+name: Validate P07.04 on merged P07.02 main
+
+on:
+  push:
+    branches:
+      - validation/p07-04-current-main-551-20261013
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.10'
+          - os: windows-latest
+            python: '3.12'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Short Windows temp path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'D:\t' | Out-Null
+          "TEMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Install dependencies
+        run: |
+          uv pip install --system --no-cache -r requirements.txt
+          uv pip install --system -e ".[test]"
+      - name: Focused storage regressions
+        run: pytest -q test/cpu_only/test_batched_storage_cache_invalidation.py test/cpu_only/test_batched_storage_zero_row_contract.py test/cpu_only/test_remote_batch_slicing.py
+      - name: Full CPU/API suite
+        run: pytest -m "cpu or api"
+      - name: Compile relevant sources
+        run: python -m py_compile dataflow/utils/storage.py test/cpu_only/test_batched_storage_cache_invalidation.py test/cpu_only/test_batched_storage_zero_row_contract.py
+      - name: Diff whitespace audit
+        run: git diff --check 05a7d9edd8a09c3a7537414f757d1049e562b464 HEAD
