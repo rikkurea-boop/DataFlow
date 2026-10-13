@@ -1,0 +1,41 @@
+name: P07.02 compose fix on P07.04
+
+on:
+  push:
+    branches:
+      - validation/p07-02-compose-patcher
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: validation/p07-02-on-p07-04
+          fetch-depth: 0
+      - name: Apply P07.02 invalidation on exact P07.04 composition
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('dataflow/utils/storage.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        else:\n            raise ValueError(f"Unsupported file type: {self.cache_type}, output file should end with jsonl, csv")\n        \n        return file_path\n'''
+          new = '''        else:\n            raise ValueError(f"Unsupported file type: {self.cache_type}, output file should end with jsonl, csv")\n        \n        self._dataframe_buffer.pop(self.operator_step + 1, None)\n        return file_path\n'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one BatchedFileStorage write tail, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- dataflow/utils/storage.py
+      - name: Commit composition fix
+        run: |
+          git config user.name 'Rikku_desu~'
+          git config user.email 'rikkurea@gmail.com'
+          git add dataflow/utils/storage.py
+          git commit -m 'fix(storage): invalidate stale batched output cache'
+          git push origin HEAD:validation/p07-02-on-p07-04
