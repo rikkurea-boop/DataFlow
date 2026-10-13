@@ -962,6 +962,16 @@ class BatchedFileStorage(FileStorage):
         self._dataframe_buffer = {}
         if cache_type not in ["jsonl", "csv"]:
             raise ValueError(f"BatchedFileStorage only supports 'jsonl' and 'csv' cache types, got: {cache_type}")
+
+    def _load_local_file(self, file_path: str, file_type: str) -> pd.DataFrame:
+        if file_type != "csv" or not os.path.exists(file_path):
+            return super()._load_local_file(file_path, file_type)
+        try:
+            return pd.read_csv(file_path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+        except Exception as e:
+            raise ValueError(f"Failed to load {file_type} file: {str(e)}")
         
     def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:
         """
@@ -1029,7 +1039,9 @@ class BatchedFileStorage(FileStorage):
 
         # 转换数据为DataFrame
         if isinstance(data, list):
-            if len(data) > 0 and isinstance(data[0], dict):
+            if not data:
+                dataframe = pd.DataFrame()
+            elif isinstance(data[0], dict):
                 # 清洗列表中的每个字典
                 cleaned_data = [clean_surrogates(item) for item in data]
                 dataframe = pd.DataFrame(cleaned_data)
@@ -1049,14 +1061,20 @@ class BatchedFileStorage(FileStorage):
             with open(file_path, open_mode, encoding='utf-8') as f:
                 dataframe.to_json(f, orient="records", lines=True, force_ascii=False)
         elif self.cache_type == "csv":
-            if self.batch_step == 0:
-                dataframe.to_csv(file_path, index=False)
+            if dataframe.empty and len(dataframe.columns) == 0:
+                if self.batch_step == 0:
+                    open(file_path, 'w', encoding='utf-8').close()
             else:
-                dataframe.to_csv(file_path, index=False, header=False, mode='a')
+                write_header = (
+                    self.batch_step == 0
+                    or not os.path.exists(file_path)
+                    or os.path.getsize(file_path) == 0
+                )
+                open_mode = 'w' if self.batch_step == 0 else 'a'
+                dataframe.to_csv(file_path, index=False, header=write_header, mode=open_mode)
         else:
             raise ValueError(f"Unsupported file type: {self.cache_type}, output file should end with jsonl, csv")
         
-        self._dataframe_buffer.pop(self.operator_step + 1, None)
         return file_path
 
 class StreamBatchedFileStorage(BatchedFileStorage):
