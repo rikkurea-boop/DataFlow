@@ -41,6 +41,10 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python -m pytest -m "cpu or api"
+      - name: P07.01 SHA-256 benchmark
+        if: runner.os == 'Linux'
+        run: |
+          python test/cpu_only/benchmark_stream_transaction_hash.py
       - name: Syntax compile
         run: |
           python -m compileall -q dataflow/pipeline/Pipeline.py dataflow/utils/storage.py dataflow/utils/stream_transaction.py test/cpu_only/test_stream_transactional_resume.py
