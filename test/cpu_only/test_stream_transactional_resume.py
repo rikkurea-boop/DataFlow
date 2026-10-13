@@ -413,3 +413,114 @@ def test_opt_in_operator_contract_rejects_unknown_operator(tmp_path):
     p.compile()
     with pytest.raises(TransactionError, match="transaction_safe"):
         p.forward(batch_size=2, transactional_resume=True)
+
+
+class _AsyncCleanupServing:
+    def __init__(self):
+        self.cleanup_calls = 0
+
+    async def cleanup(self):
+        self.cleanup_calls += 1
+
+
+class _ShutdownFailsAfterCommit(_Pass):
+    def shutdown(self):
+        raise RuntimeError("injected shutdown failure")
+
+
+class _AsyncShutdownOperator(_Pass):
+    async def shutdown(self):
+        return None
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_async_serving_cleanup_is_rejected_before_execution(tmp_path, fmt):
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    pipeline = _Pipeline(source, cache, fmt, [_Pass()])
+    pipeline.compile()
+    serving = _AsyncCleanupServing()
+    pipeline.op_nodes_list[1].llm_serving = serving
+    with pytest.raises(TransactionError, match="Async serving cleanup"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    assert serving.cleanup_calls == 0
+    assert not (cache / ("p07_01_step1." + fmt)).exists()
+    assert not (cache / "p07_01_stream_transaction.json").exists()
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_async_operator_shutdown_is_rejected_before_execution(tmp_path, fmt):
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    pipeline = _Pipeline(source, cache, fmt, [_AsyncShutdownOperator()])
+    pipeline.compile()
+    with pytest.raises(TransactionError, match="Async operator shutdown"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    assert not (cache / ("p07_01_step1." + fmt)).exists()
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_noncontiguous_serving_reuse_is_rejected_before_execution(tmp_path, fmt):
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    pipeline = _Pipeline(source, cache, fmt, [_Pass(), _Pass(), _Pass()])
+    pipeline.compile()
+    serving_a = _FakeServing()
+    serving_b = _FakeServing()
+    for node, serving in zip(pipeline.op_nodes_list[1:4],
+                             [serving_a, serving_b, serving_a]):
+        node.llm_serving = serving
+    with pytest.raises(TransactionError, match="Non-contiguous serving reuse"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    assert serving_a.cleanup_calls == serving_b.cleanup_calls == 0
+    assert not (cache / ("p07_01_step1." + fmt)).exists()
+    assert not (cache / "p07_01_stream_transaction.json").exists()
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_shutdown_failure_after_stage_commit_requires_process_restart(tmp_path, fmt):
+    import json
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    pipeline = _Pipeline(source, cache, fmt,
+                         [_ShutdownFailsAfterCommit(), _Pass()])
+    pipeline.compile()
+    with pytest.raises(TransactionError, match="shutdown failed after durable stage transition"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    checkpoint = json.loads((cache / "p07_01_stream_transaction.json").read_text())
+    assert (checkpoint["stage"], checkpoint["batch"]) == (1, 0)
+    assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1, 2, 3, 4]
+    assert not (cache / ("p07_01_step2." + fmt)).exists()
+    # Neither the same instance nor another instance in this process can
+    # silently continue with resources whose cleanup failed.
+    with pytest.raises(TransactionError, match="fresh process"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    with pytest.raises(TransactionError, match="restart the process"):
+        _run(source, cache, fmt, [_ShutdownFailsAfterCommit(), _Pass()])
+
+    # A genuinely new interpreter process can resume at committed stage 1.
+    script = textwrap.dedent("""
+        import importlib.util, sys
+        spec = importlib.util.spec_from_file_location(
+            "test_stream_transactional_resume", sys.argv[4]
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        pipeline = module._Pipeline(
+            sys.argv[1], sys.argv[2], sys.argv[3],
+            [module._ShutdownFailsAfterCommit(), module._Pass()]
+        )
+        pipeline.compile()
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    """)
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(source), str(cache), fmt, __file__],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert child.returncode == 0, child.stderr
+    assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1, 2, 3, 4]
+    assert _output(cache / ("p07_01_step2." + fmt), fmt) == [0, 1, 2, 3, 4]
