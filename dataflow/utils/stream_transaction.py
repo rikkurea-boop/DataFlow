@@ -378,7 +378,8 @@ class StreamTransactionCoordinator:
         path = self.paths[stage]
         pending = dict(tx["pending"])
         if pending["offset"]:
-            with open(path, "rb") as handle:
+            with open(path, "r+b") as handle:
+                handle.flush()
                 os.fsync(handle.fileno())
         if (path.stat().st_size if path.exists() else 0) != pending["offset"]:
             raise TransactionError("Output changed before commit")
