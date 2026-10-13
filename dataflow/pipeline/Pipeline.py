@@ -640,47 +640,93 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
             raise RuntimeError("Pipeline is not compiled yet")
         nodes = [node for node in self.op_nodes_list if node.op_obj is not None]
         with StreamTransactionCoordinator(nodes, batch_size) as coordinator:
-            while coordinator.manifest["stage"] < len(nodes):
-                stage = coordinator.manifest["stage"]
-                node = nodes[stage]
-                storage = node.storage
-                storage.batch_size = batch_size
-                batch = coordinator.manifest["batch"]
-                count = coordinator.input_rows(stage)
-                total_batches = (count + batch_size - 1) // batch_size
-                if batch > total_batches:
-                    raise TransactionError("Committed cursor exceeds stage input")
-                if batch == total_batches:
-                    coordinator.transition(stage)
-                    continue
-
-                storage.batch_step = batch
-                stream = storage.iter_chunks()
-                try:
-                    for _ in range(batch):
-                        if next(stream, None) is None:
-                            raise TransactionError("Input stream shorter than committed cursor")
-                    while coordinator.manifest["batch"] < total_batches:
-                        current_batch = coordinator.manifest["batch"]
-                        chunk = next(stream, None)
-                        if chunk is None:
-                            raise TransactionError("Input stream shorter than manifest row count")
-                        storage._current_streaming_chunk = chunk
-                        coordinator.begin(stage, current_batch)
+            # A resume starts from the durable stage cursor, not from in-memory
+            # serving counters left over by a previous forward() attempt.
+            remaining = Counter(
+                node.llm_serving for node in nodes[coordinator.manifest["stage"]:]
+                if node.llm_serving is not None
+            )
+            active_serving = None
+            active_node = None
+            self.active_llm_serving = None
+            try:
+                while coordinator.manifest["stage"] < len(nodes):
+                    stage = coordinator.manifest["stage"]
+                    node = nodes[stage]
+                    active_node = node
+                    serving = node.llm_serving
+                    if serving is not None and serving is not active_serving:
+                        if active_serving is not None:
+                            active_serving.cleanup()
+                        active_serving = serving
+                        self.active_llm_serving = serving
+                    storage = node.storage
+                    storage.batch_size = batch_size
+                    batch = coordinator.manifest["batch"]
+                    count = coordinator.input_rows(stage)
+                    total_batches = (count + batch_size - 1) // batch_size
+                    if batch > total_batches:
+                        raise TransactionError("Committed cursor exceeds stage input")
+                    if batch < total_batches:
+                        storage.batch_step = batch
+                        stream = storage.iter_chunks()
                         try:
-                            node.op_obj.run(storage=storage, **node.kwargs)
-                            coordinator.commit(stage, current_batch)
-                        except BaseException:
-                            coordinator.abort()
-                            raise
+                            for _ in range(batch):
+                                if next(stream, None) is None:
+                                    raise TransactionError("Input stream shorter than committed cursor")
+                            while coordinator.manifest["batch"] < total_batches:
+                                current_batch = coordinator.manifest["batch"]
+                                chunk = next(stream, None)
+                                if chunk is None:
+                                    raise TransactionError("Input stream shorter than manifest row count")
+                                storage._current_streaming_chunk = chunk
+                                coordinator.begin(stage, current_batch)
+                                try:
+                                    node.op_obj.run(storage=storage, **node.kwargs)
+                                    coordinator.commit(stage, current_batch)
+                                except BaseException:
+                                    coordinator.abort()
+                                    raise
+                                finally:
+                                    storage._current_streaming_chunk = None
+                                storage.batch_step = coordinator.manifest["batch"]
                         finally:
                             storage._current_streaming_chunk = None
-                        storage.batch_step = coordinator.manifest["batch"]
+                            if hasattr(stream, "close"):
+                                stream.close()
+
+                    # Stage cursor is durable before releasing stage resources.
+                    coordinator.transition(stage)
+                    active_node = None
+                    if hasattr(node.op_obj, "shutdown"):
+                        node.op_obj.shutdown()
+                    if serving is not None:
+                        remaining[serving] -= 1
+                        if remaining[serving] == 0 and active_serving is serving:
+                            active_serving = None
+                            self.active_llm_serving = None
+                            serving.cleanup()
+            except BaseException:
+                # A failed stage must not strand resources in the same process.
+                # Cleanup errors do not mask the primary transaction failure.
+                if active_node is not None and hasattr(active_node.op_obj, "shutdown"):
+                    try:
+                        active_node.op_obj.shutdown()
+                    except Exception:
+                        self.logger.exception("Operator shutdown failed during transactional abort")
+                raise
+            finally:
+                try:
+                    if active_serving is not None:
+                        if __import__("sys").exc_info()[0] is not None:
+                            try:
+                                active_serving.cleanup()
+                            except Exception:
+                                self.logger.exception("Serving cleanup failed during transactional abort")
+                        else:
+                            active_serving.cleanup()
                 finally:
-                    storage._current_streaming_chunk = None
-                    if hasattr(stream, "close"):
-                        stream.close()
-                coordinator.transition(stage)
+                    self.active_llm_serving = None
         return None
 
     def _legacy_stream_forward(self, resume_step: int=0, batch_size: int|None=None, resume_from_last: bool=True):
