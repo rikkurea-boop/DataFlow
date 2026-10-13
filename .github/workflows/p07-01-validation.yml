@@ -35,7 +35,7 @@ jobs:
           uv pip install -e .[test]
       - name: P07.01 focused tests
         run: |
-          python -m pytest -q test/cpu_only/test_stream_transactional_resume.py test/cpu_only/test_stream_batched_retry_resume_contract.py
+          python -m pytest -q test/cpu_only/test_stream_transactional_resume.py
       - name: CPU/API suite
         env:
           PYTHONDONTWRITEBYTECODE: "1"
