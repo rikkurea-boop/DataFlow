@@ -271,3 +271,138 @@ def test_csv_embedded_newlines_are_logical_rows(tmp_path):
     output = pd.read_csv(cache / "p07_01_step1.csv")
     assert output["id"].tolist() == [0, 1, 2, 3, 4]
     assert output["text"].tolist() == ["a\nb", "b", "c\n\nd", "d", "e"]
+
+
+class _LifecyclePass(_Pass):
+    def __init__(self, fail=None):
+        super().__init__(fail=fail)
+        self.shutdown_calls = 0
+
+    def shutdown(self):
+        self.shutdown_calls += 1
+
+
+class _FakeServing:
+    def __init__(self):
+        self.cleanup_calls = 0
+
+    def cleanup(self):
+        self.cleanup_calls += 1
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_stage_lifecycle_shutdown_and_shared_serving_cleanup(tmp_path, fmt):
+    source = _source(tmp_path, fmt)
+    operators = [_LifecyclePass(), _LifecyclePass()]
+    pipeline = _Pipeline(source, tmp_path / "cache", fmt, operators)
+    pipeline.compile()
+    serving = _FakeServing()
+    pipeline.op_nodes_list[1].llm_serving = serving
+    pipeline.op_nodes_list[2].llm_serving = serving
+    pipeline.forward(batch_size=2, transactional_resume=True)
+    assert [op.shutdown_calls for op in operators] == [1, 1]
+    assert serving.cleanup_calls == 1
+    assert pipeline.active_llm_serving is None
+    pipeline.forward(batch_size=2, transactional_resume=True)
+    assert [op.shutdown_calls for op in operators] == [1, 1]
+    assert serving.cleanup_calls == 1
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_stage_failure_releases_serving_and_operator_resources(tmp_path, fmt):
+    source = _source(tmp_path, fmt)
+    op = _LifecyclePass(fail="after")
+    pipeline = _Pipeline(source, tmp_path / "cache", fmt, [op])
+    pipeline.compile()
+    serving = _FakeServing()
+    pipeline.op_nodes_list[1].llm_serving = serving
+    with pytest.raises(RuntimeError, match="after write"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    assert op.shutdown_calls == 1
+    assert serving.cleanup_calls == 1
+    assert pipeline.active_llm_serving is None
+    pipeline.forward(batch_size=2, transactional_resume=True)
+    assert op.shutdown_calls == 2
+    assert serving.cleanup_calls == 2
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_competing_process_lock_and_release_after_forced_exit(tmp_path, fmt):
+    from dataflow.utils.stream_transaction import StreamTransactionCoordinator
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    script = textwrap.dedent("""
+        import importlib.util, sys
+        from dataflow.utils.stream_transaction import StreamTransactionCoordinator
+        spec = importlib.util.spec_from_file_location("p07_lock_test", sys.argv[4])
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        p = mod._Pipeline(sys.argv[1], sys.argv[2], sys.argv[3], [mod._Pass()])
+        p.compile()
+        with StreamTransactionCoordinator(p.op_nodes_list[1:-1], 2):
+            print("LOCKED", flush=True)
+            sys.stdin.readline()
+    """)
+    worker = subprocess.Popen(
+        [sys.executable, "-c", script, str(source), str(cache), fmt, __file__],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert worker.stdout.readline().strip() == "LOCKED", worker.stderr.read()
+        # The second process must not reach operator.run or the manifest writer.
+        with pytest.raises((TransactionError, OSError)):
+            _run(source, cache, fmt, [_Pass()])
+        assert worker.poll() is None
+    finally:
+        worker.kill()  # Simulates an abandoned OS lock on process exit.
+        worker.communicate(timeout=15)
+    _run(source, cache, fmt, [_Pass()])
+    assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1, 2, 3, 4]
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+@pytest.mark.parametrize("damage", ["broken_json", "seal", "identity", "generation", "prefix"])
+def test_malformed_manifest_fails_closed(tmp_path, fmt, damage):
+    import hashlib
+    import json
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    _run(source, cache, fmt, [_Pass()])
+    path = cache / "p07_01_stream_transaction.json"
+    state = json.loads(path.read_text())
+    if damage == "broken_json":
+        path.write_text("{broken", encoding="utf-8")
+    else:
+        if damage == "seal":
+            state["seal"] = "0" * 64
+        else:
+            if damage == "identity":
+                state["identity"] = "wrong"
+            elif damage == "generation":
+                state["generation"] = -1
+            elif damage == "prefix":
+                state["outputs"][0]["sha256"] = "0" * 64
+            payload = {k: v for k, v in state.items() if k != "seal"}
+            state["seal"] = hashlib.sha256(json.dumps(
+                payload, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False
+            ).encode("utf-8")).hexdigest()
+        path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(TransactionError):
+        _run(source, cache, fmt, [_Pass()])
+
+
+@pytest.mark.cpu
+def test_opt_in_operator_contract_rejects_unknown_operator(tmp_path):
+    source = _source(tmp_path, "jsonl")
+    op = _Pass()
+    op.transaction_safe = False
+    p = _Pipeline(source, tmp_path / "cache", "jsonl", [op])
+    p.compile()
+    with pytest.raises(TransactionError, match="transaction_safe"):
+        p.forward(batch_size=2, transactional_resume=True)
