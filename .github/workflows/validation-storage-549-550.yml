@@ -7,25 +7,48 @@ on:
 
 jobs:
   storage:
-    name: Storage regression RED/PASS
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.10'
+          - os: windows-latest
+            python: '3.12'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v7
+      - name: Short Windows temp path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'D:\t' | Out-Null
+          "TEMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TMP=D:\t" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Install dependencies
         run: |
           uv pip install --system --no-cache -r requirements.txt
           uv pip install --system -e ".[test]"
-      - name: Storage race and zero-row contract
-        run: pytest -q test/cpu_only/test_lazy_file_storage_flush_concurrency.py test/cpu_only/test_lazy_file_storage_two_flush_order.py test/cpu_only/test_batched_storage_zero_row_contract.py
-      - name: Compile changed sources
-        if: always()
-        run: python -m py_compile dataflow/utils/storage.py test/cpu_only/test_lazy_file_storage_two_flush_order.py
-      - name: Check diff
-        if: always()
+      - name: Combined storage focused regressions
+        run: pytest -q test/cpu_only/test_lazy_file_storage_flush_concurrency.py test/cpu_only/test_lazy_file_storage_two_flush_order.py test/cpu_only/test_batched_storage_zero_row_contract.py test/cpu_only/test_batched_storage_cache_invalidation.py
+      - name: Full CPU/API suite
+        run: pytest -m "cpu or api"
+      - name: Compile sources and regressions
+        run: python -m py_compile dataflow/utils/storage.py test/cpu_only/test_lazy_file_storage_two_flush_order.py test/cpu_only/test_lazy_file_storage_flush_concurrency.py test/cpu_only/test_batched_storage_zero_row_contract.py
+      - name: Whitespace audit
         run: git diff --check 05a7d9edd8a09c3a7537414f757d1049e562b464 HEAD
