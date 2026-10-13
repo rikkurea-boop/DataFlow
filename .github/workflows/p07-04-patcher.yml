@@ -16,48 +16,18 @@ jobs:
         with:
           ref: publish/p07-04-batched-storage-zero-row
           fetch-depth: 0
-      - name: Apply minimal zero-row storage repair
+      - name: Correct patch scope and amend publication commit
         shell: python
         run: |
           from pathlib import Path
 
           path = Path("dataflow/utils/storage.py")
           text = path.read_text(encoding="utf-8")
+          before_batched, marker, batched_and_after = text.partition("class BatchedFileStorage(FileStorage):")
+          if not marker:
+              raise SystemExit("BatchedFileStorage class marker not found")
 
-          init_anchor = (
-              '        if cache_type not in ["jsonl", "csv"]:\n'
-              '            raise ValueError(f"BatchedFileStorage only supports \'jsonl\' and \'csv\' cache types, got: {cache_type}")\n'
-              '        \n'
-              '    def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:\n'
-          )
-          init_replacement = (
-              '        if cache_type not in ["jsonl", "csv"]:\n'
-              '            raise ValueError(f"BatchedFileStorage only supports \'jsonl\' and \'csv\' cache types, got: {cache_type}")\n'
-              '\n'
-              '    def _load_local_file(self, file_path: str, file_type: str) -> pd.DataFrame:\n'
-              '        if file_type == "csv" and os.path.exists(file_path):\n'
-              '            with open(file_path, "r", encoding="utf-8") as f:\n'
-              '                if not f.read().strip():\n'
-              '                    return pd.DataFrame()\n'
-              '        return super()._load_local_file(file_path, file_type)\n'
-              '        \n'
-              '    def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:\n'
-          )
-          if init_anchor not in text:
-              raise SystemExit("BatchedFileStorage init/read anchor not found")
-          text = text.replace(init_anchor, init_replacement, 1)
-
-          list_anchor = (
-              '        if isinstance(data, list):\n'
-              '            if len(data) > 0 and isinstance(data[0], dict):\n'
-              '                # 清洗列表中的每个字典\n'
-              '                cleaned_data = [clean_surrogates(item) for item in data]\n'
-              '                dataframe = pd.DataFrame(cleaned_data)\n'
-              '            else:\n'
-              '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
-              '        elif isinstance(data, pd.DataFrame):\n'
-          )
-          list_replacement = (
+          accidental = (
               '        if isinstance(data, list):\n'
               '            if not data:\n'
               '                dataframe = pd.DataFrame()\n'
@@ -69,15 +39,42 @@ jobs:
               '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
               '        elif isinstance(data, pd.DataFrame):\n'
           )
-          if list_anchor not in text:
+          original = (
+              '        if isinstance(data, list):\n'
+              '            if len(data) > 0 and isinstance(data[0], dict):\n'
+              '                # 清洗列表中的每个字典\n'
+              '                cleaned_data = [clean_surrogates(item) for item in data]\n'
+              '                dataframe = pd.DataFrame(cleaned_data)\n'
+              '            else:\n'
+              '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
+              '        elif isinstance(data, pd.DataFrame):\n'
+          )
+          if accidental not in before_batched:
+              raise SystemExit("Accidental pre-Batched list patch not found")
+          before_batched = before_batched.replace(accidental, original, 1)
+
+          batched_replacement = (
+              '        if isinstance(data, list):\n'
+              '            if not data:\n'
+              '                dataframe = pd.DataFrame()\n'
+              '            elif isinstance(data[0], dict):\n'
+              '                # 清洗列表中的每个字典\n'
+              '                cleaned_data = [clean_surrogates(item) for item in data]\n'
+              '                dataframe = pd.DataFrame(cleaned_data)\n'
+              '            else:\n'
+              '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
+              '        elif isinstance(data, pd.DataFrame):\n'
+          )
+          if original not in batched_and_after:
               raise SystemExit("BatchedFileStorage list conversion anchor not found")
-          text = text.replace(list_anchor, list_replacement, 1)
-          path.write_text(text, encoding="utf-8")
-      - name: Commit repair
+          batched_and_after = batched_and_after.replace(original, batched_replacement, 1)
+
+          path.write_text(before_batched + marker + batched_and_after, encoding="utf-8")
+      - name: Amend production commit
         run: |
           git config user.name "Rikku_desu~"
           git config user.email "rikkurea@gmail.com"
           git add dataflow/utils/storage.py
           git diff --cached --check
-          git commit -m "fix(storage): preserve zero-row batched list datasets"
-          git push origin HEAD:publish/p07-04-batched-storage-zero-row
+          git commit --amend --no-edit
+          git push --force-with-lease=refs/heads/publish/p07-04-batched-storage-zero-row:fd608bbe3ae344786f5ecf775d20ed60199819b3 origin HEAD:publish/p07-04-batched-storage-zero-row
