@@ -1,0 +1,48 @@
+name: P07.04 amend publication patch
+
+on:
+  push:
+    branches:
+      - validation/p07-04-amend-patcher
+
+permissions:
+  contents: write
+
+jobs:
+  amend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Checkout publication branch
+        run: |
+          git fetch origin publish/p07-04-batched-storage-zero-row
+          git checkout -B publish/p07-04-batched-storage-zero-row origin/publish/p07-04-batched-storage-zero-row
+          test "$(git rev-parse HEAD)" = "3eb63bc0bedc407be219d15f5f328b64bd2fe6a1"
+      - name: Replace CSV pre-read with EmptyDataError handling
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("dataflow/utils/storage.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''    def _load_local_file(self, file_path: str, file_type: str) -> pd.DataFrame:\n        if file_type == "csv" and os.path.exists(file_path):\n            with open(file_path, "r", encoding="utf-8") as f:\n                if not f.read().strip():\n                    return pd.DataFrame()\n        return super()._load_local_file(file_path, file_type)\n'''
+          new = '''    def _load_local_file(self, file_path: str, file_type: str) -> pd.DataFrame:\n        if file_type != "csv" or not os.path.exists(file_path):\n            return super()._load_local_file(file_path, file_type)\n        try:\n            return pd.read_csv(file_path)\n        except pd.errors.EmptyDataError:\n            return pd.DataFrame()\n        except Exception as e:\n            raise ValueError(f"Failed to load {file_type} file: {str(e)}")\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one old CSV guard, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+      - name: Scope checks
+        run: |
+          git diff --check
+          git diff -- dataflow/utils/storage.py
+          grep -n "f.read().strip" dataflow/utils/storage.py && exit 1 || true
+      - name: Amend production commit
+        run: |
+          git config user.name "Rikku_desu~"
+          git config user.email "rikkurea@gmail.com"
+          git add dataflow/utils/storage.py
+          git commit --amend --no-edit
+          git log -1 --oneline
+          test "$(git rev-parse HEAD^)" = "df994ddb85f8f749fb6e6d37ce2fbfad993930c6"
+          git push --force-with-lease=refs/heads/publish/p07-04-batched-storage-zero-row:3eb63bc0bedc407be219d15f5f328b64bd2fe6a1 origin HEAD:refs/heads/publish/p07-04-batched-storage-zero-row
