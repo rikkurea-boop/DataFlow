@@ -24,47 +24,51 @@ jobs:
           path = Path("dataflow/utils/storage.py")
           text = path.read_text(encoding="utf-8")
 
-          init_anchor = '''        if cache_type not in ["jsonl", "csv"]:
-              raise ValueError(f"BatchedFileStorage only supports 'jsonl' and 'csv' cache types, got: {cache_type}")
-          
-          def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:
-          '''
-          init_replacement = '''        if cache_type not in ["jsonl", "csv"]:
-              raise ValueError(f"BatchedFileStorage only supports 'jsonl' and 'csv' cache types, got: {cache_type}")
-
-          def _load_local_file(self, file_path: str, file_type: str) -> pd.DataFrame:
-              if file_type == "csv" and os.path.exists(file_path):
-                  with open(file_path, "r", encoding="utf-8") as f:
-                      if not f.read().strip():
-                          return pd.DataFrame()
-              return super()._load_local_file(file_path, file_type)
-          
-          def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:
-          '''
+          init_anchor = (
+              '        if cache_type not in ["jsonl", "csv"]:\n'
+              '            raise ValueError(f"BatchedFileStorage only supports \'jsonl\' and \'csv\' cache types, got: {cache_type}")\n'
+              '        \n'
+              '    def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:\n'
+          )
+          init_replacement = (
+              '        if cache_type not in ["jsonl", "csv"]:\n'
+              '            raise ValueError(f"BatchedFileStorage only supports \'jsonl\' and \'csv\' cache types, got: {cache_type}")\n'
+              '\n'
+              '    def _load_local_file(self, file_path: str, file_type: str) -> pd.DataFrame:\n'
+              '        if file_type == "csv" and os.path.exists(file_path):\n'
+              '            with open(file_path, "r", encoding="utf-8") as f:\n'
+              '                if not f.read().strip():\n'
+              '                    return pd.DataFrame()\n'
+              '        return super()._load_local_file(file_path, file_type)\n'
+              '        \n'
+              '    def read(self, output_type: Literal["dataframe", "dict"]="dataframe") -> Any:\n'
+          )
           if init_anchor not in text:
               raise SystemExit("BatchedFileStorage init/read anchor not found")
           text = text.replace(init_anchor, init_replacement, 1)
 
-          list_anchor = '''        if isinstance(data, list):
-              if len(data) > 0 and isinstance(data[0], dict):
-                  # 清洗列表中的每个字典
-                  cleaned_data = [clean_surrogates(item) for item in data]
-                  dataframe = pd.DataFrame(cleaned_data)
-              else:
-                  raise ValueError(f"Unsupported data type: {type(data[0])}")
-          elif isinstance(data, pd.DataFrame):
-          '''
-          list_replacement = '''        if isinstance(data, list):
-              if not data:
-                  dataframe = pd.DataFrame()
-              elif isinstance(data[0], dict):
-                  # 清洗列表中的每个字典
-                  cleaned_data = [clean_surrogates(item) for item in data]
-                  dataframe = pd.DataFrame(cleaned_data)
-              else:
-                  raise ValueError(f"Unsupported data type: {type(data[0])}")
-          elif isinstance(data, pd.DataFrame):
-          '''
+          list_anchor = (
+              '        if isinstance(data, list):\n'
+              '            if len(data) > 0 and isinstance(data[0], dict):\n'
+              '                # 清洗列表中的每个字典\n'
+              '                cleaned_data = [clean_surrogates(item) for item in data]\n'
+              '                dataframe = pd.DataFrame(cleaned_data)\n'
+              '            else:\n'
+              '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
+              '        elif isinstance(data, pd.DataFrame):\n'
+          )
+          list_replacement = (
+              '        if isinstance(data, list):\n'
+              '            if not data:\n'
+              '                dataframe = pd.DataFrame()\n'
+              '            elif isinstance(data[0], dict):\n'
+              '                # 清洗列表中的每个字典\n'
+              '                cleaned_data = [clean_surrogates(item) for item in data]\n'
+              '                dataframe = pd.DataFrame(cleaned_data)\n'
+              '            else:\n'
+              '                raise ValueError(f"Unsupported data type: {type(data[0])}")\n'
+              '        elif isinstance(data, pd.DataFrame):\n'
+          )
           if list_anchor not in text:
               raise SystemExit("BatchedFileStorage list conversion anchor not found")
           text = text.replace(list_anchor, list_replacement, 1)
