@@ -210,3 +210,64 @@ def test_force_killed_process_rolls_back_persisted_batch(tmp_path, fmt):
     assert result.returncode == 79, result.stderr
     _run(source, cache, fmt, [_Pass()])
     assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1, 2, 3, 4]
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+@pytest.mark.parametrize("after_replace", [False, True])
+def test_manifest_commit_uncertainty_reconciles(tmp_path, monkeypatch, fmt, after_replace):
+    from dataflow.utils.stream_transaction import StreamTransactionCoordinator
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    operator = _Pass()
+    p = _Pipeline(source, cache, fmt, [operator])
+    p.compile()
+    original = StreamTransactionCoordinator._atomic_manifest
+    attempted = [False]
+
+    def injected(self, state):
+        if state["generation"] == 1 and not attempted[0]:
+            attempted[0] = True
+            if after_replace:
+                original(self, state)
+            raise OSError("injected manifest durability failure")
+        return original(self, state)
+
+    monkeypatch.setattr(StreamTransactionCoordinator, "_atomic_manifest", injected)
+    with pytest.raises(TransactionError, match="commit uncertain"):
+        p.forward(batch_size=2, transactional_resume=True)
+    assert attempted[0]
+    p.forward(batch_size=2, transactional_resume=True)
+    assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1, 2, 3, 4]
+
+
+class _DropFirst(OperatorABC):
+    transaction_safe = True
+
+    def transaction_signature(self):
+        return {}
+
+    def run(self, storage):
+        frame = storage.read("dataframe")
+        storage.write([] if frame["id"].tolist() == [0, 1] else frame)
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_empty_first_batch_then_populated(tmp_path, fmt):
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    _run(source, cache, fmt, [_DropFirst()])
+    assert _output(cache / ("p07_01_step1." + fmt), fmt) == [2, 3, 4]
+
+
+@pytest.mark.cpu
+def test_csv_embedded_newlines_are_logical_rows(tmp_path):
+    source = tmp_path / "source.csv"
+    pd.DataFrame({"id": [0, 1, 2, 3, 4],
+                  "text": ["a\nb", "b", "c\n\nd", "d", "e"]}).to_csv(source, index=False)
+    cache = tmp_path / "cache"
+    _run(source, cache, "csv", [_Pass()])
+    output = pd.read_csv(cache / "p07_01_step1.csv")
+    assert output["id"].tolist() == [0, 1, 2, 3, 4]
+    assert output["text"].tolist() == ["a\nb", "b", "c\n\nd", "d", "e"]
