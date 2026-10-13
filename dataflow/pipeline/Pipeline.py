@@ -644,12 +644,29 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
             return self._transactional_forward(batch_size)
         return self._legacy_stream_forward(resume_step, batch_size, resume_from_last)
 
+    @staticmethod
+    def _stream_sync_cleanup(serving):
+        """Do not silently drop dynamically returned cleanup coroutines."""
+        import inspect
+        from dataflow.utils.stream_transaction import TransactionError
+
+        result = serving.cleanup()
+        if inspect.isawaitable(result):
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+            raise TransactionError(
+                "Serving cleanup returned an awaitable; transactional mode requires synchronous cleanup"
+            )
+
     def _transactional_forward(self, batch_size):
         from dataflow.utils.stream_transaction import StreamTransactionCoordinator
         from dataflow.utils.stream_transaction import TransactionError
 
         if not self.compiled:
             raise RuntimeError("Pipeline is not compiled yet")
+        if getattr(self, "_stream_lifecycle_failed", False):
+            raise TransactionError("Lifecycle failure requires a fresh process for safe resume")
         nodes = [node for node in self.op_nodes_list if node.op_obj is not None]
         with StreamTransactionCoordinator(nodes, batch_size) as coordinator:
             # A resume starts from the durable stage cursor, not from in-memory
@@ -669,7 +686,12 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
                     serving = node.llm_serving
                     if serving is not None and serving is not active_serving:
                         if active_serving is not None:
-                            active_serving.cleanup()
+                            try:
+                                self._stream_sync_cleanup(active_serving)
+                            except Exception:
+                                self._stream_lifecycle_failed = True
+                                coordinator.mark_lifecycle_unsafe()
+                                raise
                         active_serving = serving
                         self.active_llm_serving = serving
                     storage = node.storage
@@ -711,13 +733,26 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
                     coordinator.transition(stage)
                     active_node = None
                     if hasattr(node.op_obj, "shutdown"):
-                        node.op_obj.shutdown()
+                        try:
+                            node.op_obj.shutdown()
+                        except Exception as exc:
+                            self._stream_lifecycle_failed = True
+                            coordinator.mark_lifecycle_unsafe()
+                            raise TransactionError(
+                                "Operator shutdown failed after durable stage transition; "
+                                "restart the process to resume"
+                            ) from exc
                     if serving is not None:
                         remaining[serving] -= 1
                         if remaining[serving] == 0 and active_serving is serving:
                             active_serving = None
                             self.active_llm_serving = None
-                            serving.cleanup()
+                            try:
+                                self._stream_sync_cleanup(serving)
+                            except Exception:
+                                self._stream_lifecycle_failed = True
+                                coordinator.mark_lifecycle_unsafe()
+                                raise
             except BaseException:
                 # A failed stage must not strand resources in the same process.
                 # Cleanup errors do not mask the primary transaction failure.
@@ -732,11 +767,18 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
                     if active_serving is not None:
                         if __import__("sys").exc_info()[0] is not None:
                             try:
-                                active_serving.cleanup()
+                                self._stream_sync_cleanup(active_serving)
                             except Exception:
+                                self._stream_lifecycle_failed = True
+                                coordinator.mark_lifecycle_unsafe()
                                 self.logger.exception("Serving cleanup failed during transactional abort")
                         else:
-                            active_serving.cleanup()
+                            try:
+                                self._stream_sync_cleanup(active_serving)
+                            except Exception:
+                                self._stream_lifecycle_failed = True
+                                coordinator.mark_lifecycle_unsafe()
+                                raise
                 finally:
                     self.active_llm_serving = None
         return None
