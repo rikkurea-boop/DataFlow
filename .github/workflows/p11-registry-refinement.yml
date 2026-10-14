@@ -36,7 +36,7 @@ jobs:
           uv pip install --no-cache -r requirements.txt
           uv pip install -e .[test]
       - name: Syntax validation
-        run: python -m compileall -q dataflow/utils/registry.py test/cpu_only/test_registry_recovery_determinism.py test/cpu_only/test_registry_manager_review_edges.py
+        run: python -m compileall -q dataflow/utils/registry.py test/cpu_only/test_registry_recovery_determinism.py test/cpu_only/test_registry_manager_review_edges.py test/cpu_only/test_registry_manager_ast_contracts.py
       - name: Registry regressions
         run: python -m pytest -q test/cpu_only/test_registry_recovery_determinism.py test/cpu_only/test_registry_manager_review_edges.py test/cpu_only/test_prompt_registry_full_enumeration.py
       - name: CPU and API suite
