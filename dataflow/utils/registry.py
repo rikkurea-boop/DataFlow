@@ -113,8 +113,13 @@ class Registry():
                 module._loaded_classes.update(cache)
             # Python normally removes only the failing module. Dependencies that
             # imported successfully during the attempt must also be discarded.
-            for module_name in set(sys.modules) - loaded:
-                sys.modules.pop(module_name, None)
+            for module_name in sorted(set(sys.modules) - loaded, reverse=True):
+                module = sys.modules.pop(module_name, None)
+                parent_name, separator, child_name = module_name.rpartition(".")
+                if separator:
+                    parent = sys.modules.get(parent_name)
+                    if parent is not None and parent.__dict__.get(child_name) is module:
+                        del parent.__dict__[child_name]
             raise
 
     def _load_module(self, module_name):
