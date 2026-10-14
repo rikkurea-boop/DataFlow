@@ -77,3 +77,71 @@ def test_statically_unreachable_registration_does_not_import_unrelated_module():
         assert resolved.__module__ == "dataflow.p11_manager_dead_code.z"
         assert "dataflow.p11_manager_dead_code.a" not in sys.modules
     """)
+
+
+def test_reachable_else_and_bare_decorator_are_discovered():
+    fresh(r"""
+        reg = make("p11_ast_else", {
+            "a.py": (
+                "from dataflow.utils import registry as r\n"
+                "if False:\n"
+                "    raise RuntimeError('impossible branch')\n"
+                "else:\n"
+                "    @r._manager_ast_registry.register\n"
+                "    class Shared: pass\n"
+            ),
+            "z.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_ast_registry.register()\n"
+                "class Shared: pass\n"
+            ),
+        })
+        importlib.import_module("dataflow.p11_ast_else.z")
+        assert reg.get("Shared").__module__ == "dataflow.p11_ast_else.a"
+    """)
+
+
+def test_statically_false_not_condition_and_deferred_function_do_not_import():
+    fresh(r"""
+        reg = make("p11_ast_deferred", {
+            "a.py": (
+                "from dataflow.utils import registry as r\n"
+                "if not True:\n"
+                "    @r._manager_ast_registry.register()\n"
+                "    class Shared: pass\n"
+                "def never_called():\n"
+                "    @r._manager_ast_registry.register()\n"
+                "    class Shared: pass\n"
+                "raise RuntimeError('unrelated import')\n"
+            ),
+            "z.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_ast_registry.register()\n"
+                "class Shared: pass\n"
+            ),
+        })
+        importlib.import_module("dataflow.p11_ast_deferred.z")
+        assert reg.get("Shared").__module__ == "dataflow.p11_ast_deferred.z"
+        assert "dataflow.p11_ast_deferred.a" not in sys.modules
+    """)
+
+
+def test_unrelated_bare_decorator_does_not_trigger_import():
+    fresh(r"""
+        reg = make("p11_ast_unrelated_bare", {
+            "a.py": (
+                "from dataflow.utils.registry import OPERATOR_REGISTRY\n"
+                "@OPERATOR_REGISTRY.register\n"
+                "class Shared: pass\n"
+                "raise RuntimeError('different registry')\n"
+            ),
+            "z.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_ast_registry.register()\n"
+                "class Shared: pass\n"
+            ),
+        })
+        importlib.import_module("dataflow.p11_ast_unrelated_bare.z")
+        assert reg.get("Shared").__module__ == "dataflow.p11_ast_unrelated_bare.z"
+        assert "dataflow.p11_ast_unrelated_bare.a" not in sys.modules
+    """)
