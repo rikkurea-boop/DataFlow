@@ -40,6 +40,63 @@ class PipelineABC(ABC):
         """
         pass
     
+    @staticmethod
+    def _snapshot_compilation_storage_steps(attributes):
+        """Capture storage cursors reachable through common pipeline-owned holders.
+
+        Storage may live in a dict/list or a lightweight configuration object
+        rather than a top-level pipeline attribute. Traverse these references
+        without copying or mutating them. Avoid walking into heavy external
+        libraries, serving/model internals, or entire operator object graphs.
+        """
+        storage_steps = {}
+        visited = set()
+        pending = [(value, 0) for value in attributes.values()]
+        excluded_modules = (
+            "logging", "loguru", "pandas", "numpy", "torch", "transformers",
+            "datasets", "ray",
+        )
+
+        while pending:
+            value, depth = pending.pop()
+            identity = id(value)
+            if identity in visited:
+                continue
+            visited.add(identity)
+
+            if isinstance(value, DataFlowStorage):
+                if hasattr(value, "operator_step"):
+                    storage_steps[identity] = (value, value.operator_step)
+                continue
+
+            # Bound traversal so arbitrary user data or cyclic configuration
+            # graphs cannot turn compilation into a full object-graph scan.
+            if depth >= 6:
+                continue
+            if isinstance(value, dict):
+                children = value.values()
+            elif isinstance(value, (list, tuple, set, frozenset)):
+                children = value
+            elif isinstance(value, (OperatorABC, LLM_SERVING_CLASSES)):
+                # A configured operator may hold storage, but its serving/model
+                # references must not be recursively inspected.
+                children = (
+                    child for child in vars(value).values()
+                    if isinstance(child, DataFlowStorage)
+                )
+            elif (
+                hasattr(value, "__dict__")
+                and not isinstance(value, type)
+                and not type(value).__module__.startswith(excluded_modules)
+            ):
+                children = vars(value).values()
+            else:
+                continue
+
+            pending.extend((child, depth + 1) for child in children)
+
+        return storage_steps
+
     def compile(self):
         """Compile once, restoring the uncompiled pipeline on failure.
 
@@ -54,12 +111,7 @@ class PipelineABC(ABC):
         # Keep the original attribute bindings, including the subclass's
         # forward method (which may have been attached to this instance).
         previous_attributes = vars(self).copy()
-        storage_steps = {
-            id(value): (value, value.operator_step)
-            for value in previous_attributes.values()
-            if isinstance(value, DataFlowStorage)
-            and hasattr(value, "operator_step")
-        }
+        storage_steps = self._snapshot_compilation_storage_steps(previous_attributes)
 
         # Each attempt has its own graph construction state.
         self.op_runtimes = []
