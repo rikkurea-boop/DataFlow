@@ -1,0 +1,45 @@
+name: P08 G6 QA freshness candidate validation
+
+on:
+  push:
+    branches:
+      - bugfix/p08-g6-current-run-qa-freshness-20261014
+  workflow_dispatch:
+
+jobs:
+  qa-freshness:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: P08 G6 focused filesystem tests
+        run: python -m pytest -q test/cpu_only/test_p08_g6_current_run_qa_freshness.py
+      - name: Related cache regressions
+        run: python -m pytest -q test/cpu_only/test_pdf2model_step2_cache_boundary.py test/cpu_only/test_text2model_g2t_boundaries.py test/cpu_only/test_text2model_merge_producer.py
+      - name: CPU/API tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m pytest -m "cpu or api"
+      - name: Compile affected files
+        run: python -m compileall -q dataflow/cli_funcs/cli_text.py dataflow/cli_funcs/cli_pdf.py dataflow/cli_funcs/text2model_pipeline/merge_filter_qa_pairs.py dataflow/operators/knowledge_cleaning/generate/qa_extract.py dataflow/operators/pdf2vqa/generate/vqa_formatter.py test/cpu_only/test_p08_g6_current_run_qa_freshness.py
