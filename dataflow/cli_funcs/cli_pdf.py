@@ -16,6 +16,7 @@ from pathlib import Path
 from colorama import Fore, Style
 from dataflow import get_logger
 from .paths import DataFlowPath
+from .qa_artifact_freshness import invalidate_generated_outputs, validate_training_qa, validate_dataset_info
 from transformers import AutoConfig
 
 logger = get_logger()
@@ -621,11 +622,19 @@ def cli_pdf2model_train(lf_yaml: str = ".cache/train_config.yaml", cache_path: s
         if not run_script_with_args(script1_path, "Step 1: PDF Detection", args1, cwd=str(current_dir)):
             return False
 
+        # A successful Step-2 return code alone does not prove that a new QA
+        # artifact was written; a no-op or empty producer must not expose the
+        # previous run's qa.json to training.
+        invalidate_generated_outputs(cache_path_obj)
+
         # Step 2: Data Processing
         target_script_name = "pdf_to_model_pipeline.py"
         script2 = current_dir / target_script_name
         args2 = ["--cache", cache_path]
         if not run_script_with_args(script2, "Step 2: Data Processing", args2, cwd=str(current_dir)):
+            return False
+        if not validate_training_qa(cache_path_obj, qa_type=qa_type or "kbc"):
+            print(f"{Fore.RED}❌ Step 2 produced no valid current-run QA records{Style.RESET_ALL}")
             return False
 
         # Step 2.5: Create dataset_info.json (dynamically)
@@ -648,6 +657,9 @@ def cli_pdf2model_train(lf_yaml: str = ".cache/train_config.yaml", cache_path: s
             qa_type,
             pdf2model_train_backend=pdf2model_train_backend,
         ):
+            return False
+        if not validate_dataset_info(cache_path_obj, dataset_name):
+            print(f"{Fore.RED}❌ Invalid current-run dataset metadata{Style.RESET_ALL}")
             return False
 
         print(f"{Fore.GREEN}✅ Step 2.5: Creating dataset_info.json completed{Style.RESET_ALL}")
