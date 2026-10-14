@@ -524,3 +524,81 @@ def test_shutdown_failure_after_stage_commit_requires_process_restart(tmp_path, 
     assert child.returncode == 0, child.stderr
     assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1, 2, 3, 4]
     assert _output(cache / ("p07_01_step2." + fmt), fmt) == [0, 1, 2, 3, 4]
+
+
+class _SyncShutdownReturnsCoroutine(_Pass):
+    """The shutdown method itself is sync, but its return value is awaitable."""
+
+    def __init__(self):
+        super().__init__()
+        self.shutdown_calls = 0
+        self.async_cleanup_ran = False
+
+    def shutdown(self):
+        self.shutdown_calls += 1
+
+        async def actually_cleanup():
+            self.async_cleanup_ran = True
+
+        return actually_cleanup()
+
+
+class _AbortShutdownRaises(_Pass):
+    """Operator.run raises first; shutdown raises while handling that error."""
+
+    def __init__(self):
+        super().__init__(fail="after")
+        self.shutdown_calls = 0
+
+    def shutdown(self):
+        self.shutdown_calls += 1
+        raise RuntimeError("secondary shutdown failure")
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_sync_shutdown_returning_awaitable_fails_closed_after_durable_transition(tmp_path, fmt):
+    import json
+
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    operator = _SyncShutdownReturnsCoroutine()
+    pipeline = _Pipeline(source, cache, fmt, [operator, _Pass()])
+    pipeline.compile()
+    with pytest.raises(TransactionError, match="shutdown returned an awaitable"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+
+    assert operator.shutdown_calls == 1
+    assert operator.async_cleanup_ran is False
+    checkpoint = json.loads((cache / "p07_01_stream_transaction.json").read_text())
+    assert (checkpoint["stage"], checkpoint["batch"]) == (1, 0)
+    assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1, 2, 3, 4]
+    assert not (cache / ("p07_01_step2." + fmt)).exists()
+    with pytest.raises(TransactionError, match="fresh process"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    with pytest.raises(TransactionError, match="restart the process"):
+        _run(source, cache, fmt, [_SyncShutdownReturnsCoroutine(), _Pass()])
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("fmt", ["jsonl", "csv"])
+def test_abort_shutdown_failure_preserves_primary_error_and_blocks_retry(tmp_path, fmt):
+    import json
+
+    source = _source(tmp_path, fmt)
+    cache = tmp_path / "cache"
+    operator = _AbortShutdownRaises()
+    pipeline = _Pipeline(source, cache, fmt, [operator])
+    pipeline.compile()
+    with pytest.raises(RuntimeError, match="after write") as primary:
+        pipeline.forward(batch_size=2, transactional_resume=True)
+
+    assert "secondary shutdown failure" not in str(primary.value)
+    assert operator.shutdown_calls == 1
+    checkpoint = json.loads((cache / "p07_01_stream_transaction.json").read_text())
+    assert (checkpoint["stage"], checkpoint["batch"]) == (0, 1)
+    assert _output(cache / ("p07_01_step1." + fmt), fmt) == [0, 1]
+    with pytest.raises(TransactionError, match="fresh process"):
+        pipeline.forward(batch_size=2, transactional_resume=True)
+    with pytest.raises(TransactionError, match="restart the process"):
+        _run(source, cache, fmt, [_AbortShutdownRaises()])
