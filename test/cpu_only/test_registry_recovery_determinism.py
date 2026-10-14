@@ -203,9 +203,9 @@ def test_lookup_duplicate_is_deterministic_before_explicit_full_discovery():
     _run_fresh(
         r"""
         source = (
-            "from dataflow.utils import registry as r\\n"
-            "@r._p11_test_registry.register()\\n"
-            "class Shared: pass\\n"
+            "from dataflow.utils import registry as r\n"
+            "@r._p11_test_registry.register()\n"
+            "class Shared: pass\n"
         )
         registry, _ = fixture_registry(
             "p11_early_collision", {"z.py": source, "a.py": source}
@@ -222,10 +222,10 @@ def test_direct_lazy_failure_rolls_back_partial_registry_registration():
         path = Path(temporary.name) / "dataflow" / "p11_lazy_registration" / "entry.py"
         path.parent.mkdir(parents=True)
         path.write_text(
-            "from dataflow.utils import registry as r\\n"
-            "@r.OPERATOR_REGISTRY.register()\\n"
-            "class PartialByFailedLazy: pass\\n"
-            "raise RuntimeError('direct lazy failure')\\n",
+            "from dataflow.utils import registry as r\n"
+            "@r.OPERATOR_REGISTRY.register()\n"
+            "class PartialByFailedLazy: pass\n"
+            "raise RuntimeError('direct lazy failure')\n",
             encoding="utf-8",
         )
         loader = registry_module.LazyLoader(
