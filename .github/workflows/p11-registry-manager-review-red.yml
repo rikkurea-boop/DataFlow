@@ -1,0 +1,26 @@
+name: P11 Manager Review Additional RED Regressions
+
+on:
+  push:
+    branches:
+      - validation/p11-registry-manager-review-edges-20261014
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: astral-sh/setup-uv@v7
+      - name: Install requirements
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Run independent Manager regressions
+        run: python -m pytest -q test/cpu_only/test_registry_manager_review_edges.py
