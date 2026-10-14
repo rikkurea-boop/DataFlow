@@ -130,3 +130,64 @@ def test_explicit_register_call_is_a_candidate_without_eager_unrelated_import():
         assert reg.get("Shared").__module__ == "dataflow.p11_manager_direct_register.a"
         assert "dataflow.p11_manager_direct_register.b" not in sys.modules
     """)
+
+
+def test_precedence_is_cached_for_repeated_builtin_lookup():
+    fresh(r"""
+        source = (
+            "from dataflow.utils import registry as r\n"
+            "@r._manager_review_registry.register()\n"
+            "class Shared: pass\n"
+        )
+        reg = make_registry(
+            "p11_manager_cache", {"a.py": source, "z.py": source}
+        )
+        importlib.import_module("dataflow.p11_manager_cache.z")
+        resolved = reg.get("Shared")
+        assert resolved.__module__ == "dataflow.p11_manager_cache.a"
+
+        def unexpectedly_scanned(*args):
+            raise AssertionError("Repeated lookup must reuse validated precedence")
+
+        reg._source_declares_registration = unexpectedly_scanned
+        assert reg.get("Shared") is resolved
+    """)
+
+
+def test_failed_precedence_discovery_rolls_back_and_can_retry():
+    fresh(r"""
+        reg = make_registry("p11_manager_precedence_retry", {
+            "a.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_review_registry.register()\n"
+                "class Shared: pass\n"
+                "raise ValueError('candidate failure')\n"
+            ),
+            "z.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_review_registry.register()\n"
+                "class Shared: pass\n"
+            ),
+        })
+        previous = importlib.import_module("dataflow.p11_manager_precedence_retry.z")
+        winner_before = reg.get_obj_map()["Shared"]
+        try:
+            reg.get("Shared")
+        except ValueError as error:
+            assert str(error) == "candidate failure"
+        else:
+            raise AssertionError("Import exception must propagate")
+        assert reg.get_obj_map()["Shared"] is winner_before
+        assert sys.modules["dataflow.p11_manager_precedence_retry.z"] is previous
+        assert "dataflow.p11_manager_precedence_retry.a" not in sys.modules
+
+        a_source = root / "p11_manager_precedence_retry" / "a.py"
+        a_source.write_text(
+            "from dataflow.utils import registry as r\n"
+            "@r._manager_review_registry.register()\n"
+            "class Shared: pass\n",
+            encoding="utf-8",
+        )
+        importlib.invalidate_caches()
+        assert reg.get("Shared").__module__ == "dataflow.p11_manager_precedence_retry.a"
+    """)
