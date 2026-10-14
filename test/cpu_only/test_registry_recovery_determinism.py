@@ -33,8 +33,10 @@ def fixture_registry(package_name, files, reverse=False):
     # Include a deliberately reversed filesystem order.
     listdir = registry_module.os.listdir
     def ordered_listdir(path):
-        entries = listdir(path)
-        return (list(reversed(listdir(directory))) if reverse else listdir(directory)) if Path(path).name == package_name else entries
+        if Path(path).name == package_name:
+            entries = listdir(directory)
+            return list(reversed(entries)) if reverse else entries
+        return listdir(path)
     registry_module.os.listdir = ordered_listdir
     try:
         registry = registry_module.Registry(package_name)
@@ -182,6 +184,7 @@ def test_lazy_file_import_failure_does_not_poison_sys_modules():
             "dataflow.p11_lazy", str(path.parent),
             {"Recovered": (str(path), "Recovered")},
         )
+        loader._base_folder = Path(temporary.name)
         try:
             loader.Recovered
         except RuntimeError as error:
