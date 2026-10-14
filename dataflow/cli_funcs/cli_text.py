@@ -14,6 +14,7 @@ from typing import List, Union, Any
 from colorama import Fore, Style
 from dataflow import get_logger
 from .paths import DataFlowPath
+from .qa_artifact_freshness import invalidate_generated_outputs, validate_training_qa, validate_dataset_info
 
 logger = get_logger()
 
@@ -412,6 +413,11 @@ def cli_text2model_train(
         file_size = text_input_file.stat().st_size
         print(f"{Fore.GREEN}✅ Step 1 completed: {text_input_file} ({file_size} bytes){Style.RESET_ALL}")
 
+        # Each training invocation must consume QA created by this run.
+        # Clear only the generated outputs under the selected cache. An old
+        # Step-3 intermediate would otherwise be accepted after a no-op run.
+        invalidate_generated_outputs(cache_path_obj, text_intermediate=True)
+
         # Step 2: Text2QA Pipeline
         print(f"{Fore.CYAN}Step 2: Text2QA generation...{Style.RESET_ALL}")
 
@@ -445,6 +451,12 @@ def cli_text2model_train(
 
         if not qa_file.exists() or not dataset_info_file.exists():
             print(f"{Fore.RED}❌ Training data files not created{Style.RESET_ALL}")
+            return False
+        if not validate_training_qa(cache_path_obj, qa_type="kbc"):
+            print(f"{Fore.RED}❌ Current-run QA data is empty or invalid{Style.RESET_ALL}")
+            return False
+        if not validate_dataset_info(cache_path_obj, "kb_qa"):
+            print(f"{Fore.RED}❌ Current-run dataset metadata is invalid{Style.RESET_ALL}")
             return False
 
         # 统计样本数
