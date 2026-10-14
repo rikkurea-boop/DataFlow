@@ -1,0 +1,196 @@
+"""Runtime regressions for atomic discovery and stable duplicate-name resolution."""
+
+import subprocess
+import sys
+import textwrap
+
+import pytest
+
+
+pytestmark = pytest.mark.cpu
+
+_SETUP = r"""
+import importlib
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import dataflow
+registry_module = importlib.import_module("dataflow.utils.registry")
+
+temporary = tempfile.TemporaryDirectory()
+dataflow.__path__.append(str(Path(temporary.name) / "dataflow"))
+
+
+def fixture_registry(package_name, files, reverse=False):
+    directory = Path(temporary.name) / "dataflow" / package_name
+    directory.mkdir(parents=True)
+    (directory / "__init__.py").write_text("", encoding="utf-8")
+    for filename, contents in files.items():
+        (directory / filename).write_text(contents, encoding="utf-8")
+
+    # Include a deliberately reversed filesystem order.
+    listdir = registry_module.os.listdir
+    def ordered_listdir(path):
+        entries = listdir(path)
+        return list(reversed(entries)) if Path(path).name == package_name and reverse else entries
+    registry_module.os.listdir = ordered_listdir
+    try:
+        registry = registry_module.Registry(package_name)
+    finally:
+        registry_module.os.listdir = listdir
+    registry_module._p11_test_registry = registry
+    return registry, directory
+"""
+
+
+def _run_fresh(script):
+    result = subprocess.run(
+        [sys.executable, "-c", _SETUP + "\n" + textwrap.dedent(script)],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, (
+        f"Fresh-process registry regression failed ({result.returncode})\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_failed_discovery_restores_modules_registry_and_retry():
+    _run_fresh(
+        """
+        helper = (
+            "from dataflow.utils import registry as r\n"
+            "@r._p11_test_registry.register()\n"
+            "class Survivor: pass\n"
+        )
+        after = (
+            "from dataflow.utils import registry as r\n"
+            "@r._p11_test_registry.register()\n"
+            "class After: pass\n"
+        )
+        registry, directory = fixture_registry(
+            "p11_recovery",
+            {
+                "a.py": "from . import helper\nraise RuntimeError('discovery boom')\n",
+                "helper.py": helper,
+                "z.py": after,
+            },
+            reverse=True,
+        )
+        try:
+            registry._get_all()
+        except RuntimeError as error:
+            assert "discovery boom" in str(error)
+        else:
+            raise AssertionError("Expected original import exception")
+
+        assert registry.get_obj_map() == {}
+        assert all(loader is None for loader in registry.loader_map.values())
+        assert "dataflow.p11_recovery.helper" not in sys.modules
+        assert "dataflow.p11_recovery.z" not in sys.modules
+
+        (directory / "a.py").write_text("from . import helper\n", encoding="utf-8")
+        importlib.invalidate_caches()
+        registry._get_all()
+        actual = {key: value.__name__ for key, value in registry.get_obj_map().items()}
+        assert actual == {"After": "After", "Survivor": "Survivor"}
+
+        fresh, _ = fixture_registry(
+            "p11_recovery_fresh",
+            {"a.py": "from . import helper\n", "helper.py": helper, "z.py": after},
+        )
+        fresh._get_all()
+        expected = {key: value.__name__ for key, value in fresh.get_obj_map().items()}
+        assert actual == expected
+        """
+    )
+
+
+def test_lazy_lookup_failure_is_recoverable():
+    _run_fresh(
+        """
+        registry, directory = fixture_registry(
+            "p11_lookup",
+            {
+                "broken.py": (
+                    "from dataflow.utils import registry as r\n"
+                    "@r._p11_test_registry.register()\n"
+                    "class Partial: pass\n"
+                    "raise ValueError('lookup boom')\n"
+                ),
+            },
+        )
+        try:
+            registry.get("Partial")
+        except ValueError as error:
+            assert str(error) == "lookup boom"
+        else:
+            raise AssertionError("Expected original lookup exception")
+        assert not registry.get_obj_map()
+        assert all(loader is None for loader in registry.loader_map.values())
+
+        (directory / "broken.py").write_text(
+            "from dataflow.utils import registry as r\n"
+            "@r._p11_test_registry.register()\n"
+            "class Partial: pass\n",
+            encoding="utf-8",
+        )
+        importlib.invalidate_caches()
+        assert registry.get("Partial").__module__ == "dataflow.p11_lookup.broken"
+        """
+    )
+
+
+def test_duplicate_winner_and_iteration_are_import_order_independent():
+    _run_fresh(
+        """
+        source = (
+            "from dataflow.utils import registry as r\n"
+            "@r._p11_test_registry.register()\n"
+            "class Shared: pass\n"
+        )
+        files = {"z.py": source, "a.py": source}
+        left, _ = fixture_registry("p11_duplicate_left", files, reverse=True)
+        importlib.import_module("dataflow.p11_duplicate_left.z")
+        left._get_all()
+        assert left.get("Shared").__module__ == "dataflow.p11_duplicate_left.a"
+        assert list(left.keys()) == sorted(left.keys())
+
+        right, _ = fixture_registry("p11_duplicate_right", files)
+        importlib.import_module("dataflow.p11_duplicate_right.a")
+        right._get_all()
+        assert right.get("Shared").__module__ == "dataflow.p11_duplicate_right.a"
+        assert list(right.keys()) == sorted(right.keys())
+
+        external, _ = fixture_registry("p11_duplicate_plugin", files, reverse=True)
+        custom = type("Shared", (), {"__module__": "custom_user_extension"})
+        external.register(custom)
+        external._get_all()
+        assert external.get("Shared") is custom
+        """
+    )
+
+
+def test_lazy_file_import_failure_does_not_poison_sys_modules():
+    _run_fresh(
+        """
+        path = Path(temporary.name) / "dataflow" / "p11_lazy" / "nested" / "entry.py"
+        path.parent.mkdir(parents=True)
+        path.write_text("raise RuntimeError('lazy boom')\n", encoding="utf-8")
+        loader = registry_module.LazyLoader(
+            "dataflow.p11_lazy", str(path.parent),
+            {"Recovered": (str(path), "Recovered")},
+        )
+        try:
+            loader.Recovered
+        except RuntimeError as error:
+            assert str(error) == "lazy boom"
+        else:
+            raise AssertionError("Expected original lazy import exception")
+        assert "dataflow.p11_lazy.nested.entry" not in sys.modules
+        path.write_text("class Recovered: pass\n", encoding="utf-8")
+        importlib.invalidate_caches()
+        assert loader.Recovered.__name__ == "Recovered"
+        """
+    )
