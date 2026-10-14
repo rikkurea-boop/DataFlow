@@ -236,6 +236,10 @@ class VQAFormatter(OperatorABC):
 
         if not results:
             self.logger.warning("No valid VQA samples found after conversion!")
+            if self.output_json_file:
+                # No valid current-run VQA was produced. Retaining an earlier
+                # qa.json would allow a downstream training step to reuse it.
+                Path(self.output_json_file).unlink(missing_ok=True)
             return [output_messages_key, output_images_key]
 
         if self.output_json_file:
