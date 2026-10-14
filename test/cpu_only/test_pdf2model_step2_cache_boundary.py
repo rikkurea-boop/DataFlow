@@ -448,5 +448,7 @@ def test_real_pdf_helper_handoff_reaches_step2_with_selected_cache(monkeypatch, 
     assert storage["resolved_manifest"] == str(selected_manifest.resolve())
     assert storage["manifest_text"] == selected_manifest.read_text(encoding="utf-8")
     assert capture["qa_output_file"] == str(selected / ".cache" / "data" / "qa.json")
-    assert capture["step4_seen"] is True
+    # The stub formatter emits [] solely to prove cache routing. G6 requires
+    # rejecting that empty artifact, so training must NOT be invoked.
+    assert capture["step4_seen"] is False
     assert result is False
