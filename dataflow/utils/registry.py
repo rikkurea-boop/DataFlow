@@ -4,6 +4,7 @@ import sys
 import types
 import os
 import pkgutil
+from contextlib import contextmanager
 from dataflow.logger import get_logger
 from pathlib import Path
 
@@ -66,7 +67,7 @@ class Registry():
         self._name = name
         self._obj_map = {}
         self._base_folder = Path(__file__).resolve().parents[1]
-        self._sub_modules = list(os.listdir(self._base_folder / name))
+        self._sub_modules = sorted(os.listdir(self._base_folder / name))
         if "__init__.py" in self._sub_modules:
             self._sub_modules.remove("__init__.py")
         if "__pycache__" in self._sub_modules:
@@ -74,61 +75,111 @@ class Registry():
         if len(self._sub_modules) > 0:
             self.loader_map = dict(zip(self._sub_modules, [None] * len(self._sub_modules)))
         
+    @contextmanager
+    def _discovery_transaction(self):
+        """Rollback discovery-owned state if an import fails.
+
+        This includes import side effects in the other global registry. Previously
+        loaded modules and manually registered objects are left intact.
+        """
+        registries = [
+            value for value in globals().values()
+            if isinstance(value, Registry)
+        ]
+        if self not in registries:
+            registries.append(self)
+        snapshots = [
+            (registry, dict(registry._obj_map),
+             dict(getattr(registry, "loader_map", {})))
+            for registry in registries
+        ]
+        loaded = set(sys.modules)
+        lazy_cache = {
+            id(module): (module, dict(module._loaded_classes))
+            for module in sys.modules.values()
+            if isinstance(module, LazyLoader)
+        }
+        try:
+            yield
+        except BaseException:
+            for registry, objects, loaders in snapshots:
+                registry._obj_map.clear()
+                registry._obj_map.update(objects)
+                if hasattr(registry, "loader_map"):
+                    registry.loader_map.clear()
+                    registry.loader_map.update(loaders)
+            for module, cache in lazy_cache.values():
+                module._loaded_classes.clear()
+                module._loaded_classes.update(cache)
+            # Python normally removes only the failing module. Dependencies that
+            # imported successfully during the attempt must also be discarded.
+            for module_name in set(sys.modules) - loaded:
+                sys.modules.pop(module_name, None)
+            raise
+
+    def _load_module(self, module_name):
+        entry = Path(module_name).stem if module_name.endswith(".py") else module_name
+        module = importlib.import_module(f"dataflow.{self._name}.{entry}")
+        self.loader_map[module_name] = module
+        return module
+
     def _init_loaders(self):
-        for module_name in self.loader_map.keys():
-            module_path = f"dataflow.{self._name}.{module_name}"
-            self.loader_map[module_name] = importlib.import_module(module_path)
+        with self._discovery_transaction():
+            for module_name in self.loader_map:
+                if self.loader_map[module_name] is None:
+                    self._load_module(module_name)
 
     def _do_register(self, name, obj):
-        if name not in self._obj_map:
+        existing = self._obj_map.get(name)
+        if existing is None:
             self._obj_map[name] = obj
+            return
+        if existing is obj:
+            return
+        # Preserve the public first-registration-wins contract for user
+        # extensions. Built-in discovery conflicts use a stable source ranking.
+        namespace = f"dataflow.{self._name}."
+        old_module = getattr(existing, "__module__", "")
+        new_module = getattr(obj, "__module__", "")
+        if old_module.startswith(namespace) and new_module.startswith(namespace):
+            if (new_module, getattr(obj, "__qualname__", name)) < (
+                old_module, getattr(existing, "__qualname__", name)
+            ):
+                self._obj_map[name] = obj
 
     def register(self, obj=None):
-        """
-        Register the given object under the the name `obj.__name__`.
-        Can be used as either a decorator or not.
-        See docstring of this class for usage.
-        """
+        """Register an object under its class/function name."""
         if obj is None:
-            # used as a decorator
             def deco(func_or_class):
-                name = func_or_class.__name__
-                self._do_register(name, func_or_class)
+                self._do_register(func_or_class.__name__, func_or_class)
                 return func_or_class
-
             return deco
-
-        # used as a function call
-        name = obj.__name__
-        self._do_register(name, obj)
+        self._do_register(obj.__name__, obj)
 
     def get(self, name):
         ret = self._obj_map.get(name)
+        if ret is not None:
+            return ret
         logger = get_logger()
-        if ret is None:
+        with self._discovery_transaction():
             if None in self.loader_map.values():
                 self._init_loaders()
+            # Built-in registration may have populated the map during import.
+            ret = self._obj_map.get(name)
+            if ret is not None:
+                return ret
             for module_lib in self.loader_map.values():
-                # module_path = "dataflow.operators." + x
                 try:
-                    # module_lib = importlib.import_module(module_path)
                     clss = getattr(module_lib, name)
-                    self._obj_map[name] = clss
-                    return clss
-                except AttributeError as e:
-                    logger.debug(f"{str(e)}")
+                except AttributeError:
                     continue
-                except Exception as e:
-                    raise e
-            logger.error(f"No object named '{name}' found in '{self._name}' registry!")
-            raise KeyError(f"No object named '{name}' found in '{self._name}' registry!")
+                self._do_register(name, clss)
+            ret = self._obj_map.get(name)
+            if ret is not None:
+                return ret
+        logger.error(f"No object named '{name}' found in '{self._name}' registry!")
+        raise KeyError(f"No object named '{name}' found in '{self._name}' registry!")
 
-        if ret is None:
-            logger.error(f"No object named '{name}' found in '{self._name}' registry!")
-        assert ret is not None, f"No object named '{name}' found in '{self._name}' registry!"
-        
-        return ret
-    
     def apply_whitelist(self, names, *, verbose: bool = True):
         """
         在已调用 _get_all() 之后执行：
@@ -230,21 +281,21 @@ class Registry():
         return capture.get()
 
     def _get_all(self):
-        for module_name, loader in self.loader_map.items():
-            if loader is None:
-                import_name = Path(module_name).stem if module_name.endswith(".py") else module_name
-                module_path = f"dataflow.{self._name}.{import_name}"
-                loader = importlib.import_module(module_path)
-                self.loader_map[module_name] = loader
-
-            import_all = getattr(loader, "_import_all", None)
-            if callable(import_all):
-                import_all()
-            elif hasattr(loader, "__path__"):
-                for module_info in pkgutil.walk_packages(
-                    loader.__path__, prefix=f"{loader.__name__}."
-                ):
-                    importlib.import_module(module_info.name)
+        with self._discovery_transaction():
+            for module_name in self.loader_map:
+                loader = self.loader_map[module_name]
+                if loader is None:
+                    loader = self._load_module(module_name)
+                import_all = getattr(loader, "_import_all", None)
+                if callable(import_all):
+                    import_all()
+                elif hasattr(loader, "__path__"):
+                    for info in sorted(
+                        pkgutil.walk_packages(
+                            loader.__path__, prefix=f"{loader.__name__}."
+                        ), key=lambda item: item.name
+                    ):
+                        importlib.import_module(info.name)
 
     def get_obj_map(self):
         """
@@ -336,7 +387,10 @@ class LazyLoader(types.ModuleType):
             logger.debug(f"Module package: {module.__package__}")
             spec.loader.exec_module(module)
 
-        except Exception as e:
+        except BaseException as e:
+            # Never leave a partially executed module in sys.modules.
+            if "mod_name" in locals() and sys.modules.get(mod_name) is locals().get("module"):
+                sys.modules.pop(mod_name, None)
             import traceback
             logger.exception("Import failed for %s from %s", mod_name, abs_file_path)
             # 可选：再打印一份，CI 日志更清楚
