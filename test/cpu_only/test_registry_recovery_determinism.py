@@ -197,3 +197,50 @@ def test_lazy_file_import_failure_does_not_poison_sys_modules():
         assert loader.Recovered.__name__ == "Recovered"
         """
     )
+
+
+def test_lookup_duplicate_is_deterministic_before_explicit_full_discovery():
+    _run_fresh(
+        r"""
+        source = (
+            "from dataflow.utils import registry as r\\n"
+            "@r._p11_test_registry.register()\\n"
+            "class Shared: pass\\n"
+        )
+        registry, _ = fixture_registry(
+            "p11_early_collision", {"z.py": source, "a.py": source}
+        )
+        importlib.import_module("dataflow.p11_early_collision.z")
+        assert registry.get("Shared").__module__ == "dataflow.p11_early_collision.a"
+        """
+    )
+
+
+def test_direct_lazy_failure_rolls_back_partial_registry_registration():
+    _run_fresh(
+        r"""
+        path = Path(temporary.name) / "dataflow" / "p11_lazy_registration" / "entry.py"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "from dataflow.utils import registry as r\\n"
+            "@r.OPERATOR_REGISTRY.register()\\n"
+            "class PartialByFailedLazy: pass\\n"
+            "raise RuntimeError('direct lazy failure')\\n",
+            encoding="utf-8",
+        )
+        loader = registry_module.LazyLoader(
+            "dataflow.p11_lazy_registration",
+            str(path.parent),
+            {"Recovered": (str(path), "Recovered")},
+        )
+        loader._base_folder = Path(temporary.name)
+        before = dict(registry_module.OPERATOR_REGISTRY.get_obj_map())
+        try:
+            loader.Recovered
+        except RuntimeError as error:
+            assert str(error) == "direct lazy failure"
+        else:
+            raise AssertionError("Expected failed direct lazy import")
+        assert registry_module.OPERATOR_REGISTRY.get_obj_map() == before
+        """
+    )
