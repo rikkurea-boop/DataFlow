@@ -1,0 +1,33 @@
+name: Registry RED Validation
+
+on:
+  push:
+    branches: [ "validation/p11-04-05-red-20261014" ]
+  workflow_dispatch:
+
+jobs:
+  reproduce:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Syntax validation
+        run: python -m compileall -q dataflow/utils/registry.py test/cpu_only/test_registry_recovery_determinism.py
+      - name: Focused registry tests
+        run: python -m pytest -q test/cpu_only/test_registry_recovery_determinism.py test/cpu_only/test_prompt_registry_full_enumeration.py
