@@ -244,3 +244,101 @@ def test_direct_lazy_failure_rolls_back_partial_registry_registration():
         assert registry_module.OPERATOR_REGISTRY.get_obj_map() == before
         """
     )
+
+
+def test_early_collision_resolution_keeps_unrelated_modules_lazy():
+    _run_fresh(
+        r"""
+        source = (
+            "from dataflow.utils import registry as r\n"
+            "@r._p11_test_registry.register()\n"
+            "class Shared: pass\n"
+        )
+        registry, _ = fixture_registry(
+            "p11_selective",
+            {
+                "z.py": source,
+                "a.py": source,
+                "b.py": "raise RuntimeError('unrelated source must stay lazy')\n",
+            },
+        )
+        importlib.import_module("dataflow.p11_selective.z")
+        assert registry.get("Shared").__module__ == "dataflow.p11_selective.a"
+        assert "dataflow.p11_selective.b" not in sys.modules
+        assert registry.loader_map["b.py"] is None
+        """
+    )
+
+
+def test_failure_preserves_preloaded_modules_and_explicit_registration():
+    _run_fresh(
+        r"""
+        registry, directory = fixture_registry(
+            "p11_preserved",
+            {
+                "safe.py": "class Safe: pass\n",
+                "broken.py": (
+                    "from dataflow.utils import registry as r\n"
+                    "@r._p11_test_registry.register()\n"
+                    "class Leaked: pass\n"
+                    "raise RuntimeError('expected failure')\n"
+                ),
+            },
+        )
+        safe_module = importlib.import_module("dataflow.p11_preserved.safe")
+        external = type("UserDefined", (), {"__module__": "extension_module"})
+        registry.register(external)
+        try:
+            registry._get_all()
+        except RuntimeError as error:
+            assert str(error) == "expected failure"
+        else:
+            raise AssertionError("Expected import failure")
+        assert sys.modules["dataflow.p11_preserved.safe"] is safe_module
+        assert registry.get_obj_map() == {"UserDefined": external}
+        assert registry.loader_map["safe.py"] is None
+        """
+    )
+
+
+def test_direct_lazy_retry_preserves_prior_objects_without_leaks():
+    _run_fresh(
+        r"""
+        path = Path(temporary.name) / "dataflow" / "p11_direct_retry" / "entry.py"
+        path.parent.mkdir(parents=True)
+        external = type("UserDefined", (), {"__module__": "extension_module"})
+        registry_module.OPERATOR_REGISTRY.register(external)
+        baseline = dict(registry_module.OPERATOR_REGISTRY.get_obj_map())
+        path.write_text(
+            "from dataflow.utils.registry import OPERATOR_REGISTRY\n"
+            "@OPERATOR_REGISTRY.register()\n"
+            "class Recovered: pass\n"
+            "raise ValueError('retry needed')\n",
+            encoding="utf-8",
+        )
+        loader = registry_module.LazyLoader(
+            "dataflow.p11_direct_retry", str(path.parent),
+            {"Recovered": (str(path), "Recovered")},
+        )
+        loader._base_folder = Path(temporary.name)
+        try:
+            loader.Recovered
+        except ValueError as error:
+            assert str(error) == "retry needed"
+        else:
+            raise AssertionError("Expected import failure")
+        assert registry_module.OPERATOR_REGISTRY.get_obj_map() == baseline
+        assert "dataflow.p11_direct_retry.entry" not in sys.modules
+        path.write_text(
+            "from dataflow.utils.registry import OPERATOR_REGISTRY\n"
+            "@OPERATOR_REGISTRY.register()\n"
+            "class Recovered: pass\n",
+            encoding="utf-8",
+        )
+        importlib.invalidate_caches()
+        recovered = loader.Recovered
+        assert loader.Recovered is recovered
+        assert registry_module.OPERATOR_REGISTRY.get("Recovered") is recovered
+        assert registry_module.OPERATOR_REGISTRY.get("UserDefined") is external
+        """
+    )
