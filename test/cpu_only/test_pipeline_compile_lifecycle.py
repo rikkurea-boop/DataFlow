@@ -87,7 +87,7 @@ def _make_pipeline(base, failure=None):
     [
         ("forward", RuntimeError),
         ("graph", KeyError),
-        ("storage", AssertionError),
+        ("storage", TypeError),
     ],
 )
 def test_failed_compile_rolls_back_and_retry_succeeds(base, failure, exception):
