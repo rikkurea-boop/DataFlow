@@ -66,6 +66,8 @@ class Registry():
         """
         self._name = name
         self._obj_map = {}
+        # Avoid re-parsing the source tree for repeated lookups of the same class.
+        self._verified_precedence = {}
         self._base_folder = Path(__file__).resolve().parents[1]
         self._sub_modules = sorted(os.listdir(self._base_folder / name))
         if "__init__.py" in self._sub_modules:
@@ -90,7 +92,8 @@ class Registry():
             registries.append(self)
         snapshots = [
             (registry, dict(registry._obj_map),
-             dict(getattr(registry, "loader_map", {})))
+             dict(getattr(registry, "loader_map", {})),
+             dict(registry._verified_precedence))
             for registry in registries
         ]
         loaded = set(sys.modules)
@@ -102,9 +105,11 @@ class Registry():
         try:
             yield
         except BaseException:
-            for registry, objects, loaders in snapshots:
+            for registry, objects, loaders, verified in snapshots:
                 registry._obj_map.clear()
                 registry._obj_map.update(objects)
+                registry._verified_precedence.clear()
+                registry._verified_precedence.update(verified)
                 if hasattr(registry, "loader_map"):
                     registry.loader_map.clear()
                     registry.loader_map.update(loaders)
@@ -138,6 +143,7 @@ class Registry():
         existing = self._obj_map.get(name)
         if existing is None:
             self._obj_map[name] = obj
+            self._verified_precedence.pop(name, None)
             return
         if existing is obj:
             return
@@ -151,6 +157,7 @@ class Registry():
                 old_module, getattr(existing, "__qualname__", name)
             ):
                 self._obj_map[name] = obj
+                self._verified_precedence.pop(name, None)
 
     def register(self, obj=None):
         """Register an object under its class/function name."""
@@ -225,9 +232,13 @@ class Registry():
             if getattr(ret, "__module__", "").startswith(
                 f"dataflow.{self._name}."
             ):
+                if self._verified_precedence.get(name) is ret:
+                    return ret
                 with self._discovery_transaction():
                     self._resolve_prior_builtin_candidates(name, ret)
-                    return self._obj_map[name]
+                resolved = self._obj_map[name]
+                self._verified_precedence[name] = resolved
+                return resolved
             return ret
         logger = get_logger()
         with self._discovery_transaction():
@@ -286,6 +297,7 @@ class Registry():
         # 4) 执行就地裁剪
         for k in to_remove:
             self._obj_map.pop(k, None)
+            self._verified_precedence.pop(k, None)
 
         # 5) 统计结果
         total_after = len(self._obj_map)
