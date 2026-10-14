@@ -161,9 +161,50 @@ class Registry():
             return deco
         self._do_register(obj.__name__, obj)
 
+    def _resolve_prior_builtin_candidates(self, name, current):
+        """Resolve earlier built-in providers without eager full enumeration.
+
+        Discovery order alone is insufficient when a class was imported directly
+        before the registry loaded its remaining modules. Import only earlier
+        source modules mentioning the requested name. This leaves unrelated
+        modules lazy and keeps third-party explicit registrations untouched.
+        """
+        prefix = f"dataflow.{self._name}."
+        current_module = getattr(current, "__module__", "")
+        if not current_module.startswith(prefix):
+            return
+
+        package = importlib.import_module(f"dataflow.{self._name}")
+        for location in getattr(package, "__path__", ()):
+            root = Path(location)
+            for source in sorted(root.rglob("*.py")):
+                parts = source.relative_to(root).with_suffix("").parts
+                if parts[-1] == "__init__":
+                    parts = parts[:-1]
+                if not parts:
+                    continue
+                contender = prefix + ".".join(parts)
+                if contender >= current_module or contender in sys.modules:
+                    continue
+                try:
+                    text = source.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    # Unreadable sources should not make a registered object
+                    # unavailable; normal full discovery remains authoritative.
+                    continue
+                if name in text:
+                    importlib.import_module(contender)
+
     def get(self, name):
         ret = self._obj_map.get(name)
         if ret is not None:
+            if (None in getattr(self, "loader_map", {}).values()
+                    and getattr(ret, "__module__", "").startswith(
+                        f"dataflow.{self._name}."
+                    )):
+                with self._discovery_transaction():
+                    self._resolve_prior_builtin_candidates(name, ret)
+                    return self._obj_map[name]
             return ret
         logger = get_logger()
         with self._discovery_transaction():
@@ -427,7 +468,10 @@ class LazyLoader(types.ModuleType):
         if item in self._import_structure:
             file_path, class_name = self._import_structure[item]
             logger.info(f"Lazyloader {self.__path__} trying to import {item} ")
-            cls = self._load_class_from_file(file_path, class_name)
+            # Direct attribute access bypasses Registry.get()/_get_all();
+            # it must still rollback decorators executed by a failed module.
+            with OPERATOR_REGISTRY._discovery_transaction():
+                cls = self._load_class_from_file(file_path, class_name)
             logger.debug(f"Lazyloader {self.__path__} got and cached class {cls}")
             self._loaded_classes[item] = cls
             return cls
