@@ -363,3 +363,14 @@ def test_pdf_trainer_default_cache_still_works(tmp_path, monkeypatch):
     monkeypatch.setenv("PWD", str(tmp_path))
     monkeypatch.setitem(sys.modules, "llamafactory", types.ModuleType("llamafactory"))
     assert LlamaFactoryTrainer(cache_base="./").check_environment()
+
+
+
+def test_alpaca_instruction_only_qa_remains_valid(tmp_path):
+    from dataflow.cli_funcs.qa_artifact_freshness import validate_training_qa
+
+    data_dir = _prepare(tmp_path)
+    (data_dir / "qa.json").write_text(json.dumps([
+        {"instruction": "What is the answer?", "input": "", "output": "42"}
+    ]), encoding="utf-8")
+    assert validate_training_qa(tmp_path, qa_type="kbc") is True
