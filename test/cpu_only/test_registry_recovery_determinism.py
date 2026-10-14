@@ -58,7 +58,7 @@ def _run_fresh(script):
 
 def test_failed_discovery_restores_modules_registry_and_retry():
     _run_fresh(
-        """
+        r"""
         helper = (
             "from dataflow.utils import registry as r\n"
             "@r._p11_test_registry.register()\n"
@@ -109,7 +109,7 @@ def test_failed_discovery_restores_modules_registry_and_retry():
 
 def test_lazy_lookup_failure_is_recoverable():
     _run_fresh(
-        """
+        r"""
         registry, directory = fixture_registry(
             "p11_lookup",
             {
@@ -144,7 +144,7 @@ def test_lazy_lookup_failure_is_recoverable():
 
 def test_duplicate_winner_and_iteration_are_import_order_independent():
     _run_fresh(
-        """
+        r"""
         source = (
             "from dataflow.utils import registry as r\n"
             "@r._p11_test_registry.register()\n"
@@ -174,7 +174,7 @@ def test_duplicate_winner_and_iteration_are_import_order_independent():
 
 def test_lazy_file_import_failure_does_not_poison_sys_modules():
     _run_fresh(
-        """
+        r"""
         path = Path(temporary.name) / "dataflow" / "p11_lazy" / "nested" / "entry.py"
         path.parent.mkdir(parents=True)
         path.write_text("raise RuntimeError('lazy boom')\n", encoding="utf-8")
