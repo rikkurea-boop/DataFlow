@@ -34,7 +34,7 @@ def fixture_registry(package_name, files, reverse=False):
     listdir = registry_module.os.listdir
     def ordered_listdir(path):
         entries = listdir(path)
-        return list(reversed(entries)) if Path(path).name == package_name and reverse else entries
+        return (list(reversed(listdir(directory))) if reverse else listdir(directory)) if Path(path).name == package_name else entries
     registry_module.os.listdir = ordered_listdir
     try:
         registry = registry_module.Registry(package_name)
