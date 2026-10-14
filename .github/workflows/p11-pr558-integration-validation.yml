@@ -3,7 +3,7 @@ name: Compile and Streaming Integration Validation
 on:
   push:
     branches:
-      - "validation/p11-compile-plus-pr558-20261014"
+      - "validation/p11-hardening-plus-pr558-20261014"
   workflow_dispatch:
 
 jobs:
