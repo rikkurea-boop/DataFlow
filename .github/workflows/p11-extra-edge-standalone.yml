@@ -1,0 +1,42 @@
+name: P11 Extra Edge Standalone
+
+on:
+  push:
+    branches:
+      - "validation/p11-compile-extra-edge-20261014"
+  workflow_dispatch:
+
+jobs:
+  validation:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Syntax validation
+        run: python -m compileall -q dataflow/pipeline/Pipeline.py test/cpu_only/test_pipeline_compile_lifecycle.py test/cpu_only/test_pipeline_compile_edge_contracts.py
+      - name: Compile lifecycle and extra edge regressions
+        run: python -m pytest -q test/cpu_only/test_pipeline_compile_lifecycle.py test/cpu_only/test_pipeline_compile_edge_contracts.py
+      - name: CPU/API regression
+        run: python -m pytest -q -m "cpu or api"
