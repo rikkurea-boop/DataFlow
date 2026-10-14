@@ -168,36 +168,74 @@ class Registry():
             return deco
         self._do_register(obj.__name__, obj)
 
-    @staticmethod
-    def _source_declares_registration(source, name):
-        """Recognize static registration sites without executing unrelated code.
+    def _source_declares_registration(self, source, name):
+        """Recognize statically attributable registrations for this registry.
 
-        Comment/string mentions and undecorated classes are not registrations.
-        Dynamic names or registry mutations cannot be inferred from the AST;
-        explicit full enumeration remains available for those cases.
+        This rejects comments, string mentions, unrelated decorated classes,
+        and registrations targeting a different registry. Dynamic aliases and
+        computed registration names require explicit full discovery.
         """
         try:
             tree = ast.parse(source.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, SyntaxError):
             return False
 
-        def register_call(node):
-            return (
+        # Canonical names of this exact registry object in this module.
+        registry_names = {
+            symbol for symbol, value in globals().items() if value is self
+        }
+        imported_names = set(registry_names)
+        registry_modules = set()
+        for statement in tree.body:
+            if isinstance(statement, ast.ImportFrom):
+                if statement.module in ("dataflow.utils.registry", "dataflow.utils"):
+                    for alias in statement.names:
+                        if alias.name in registry_names:
+                            imported_names.add(alias.asname or alias.name)
+                        if alias.name == "registry" and statement.module == "dataflow.utils":
+                            registry_modules.add(alias.asname or alias.name)
+            elif isinstance(statement, ast.Import):
+                for alias in statement.names:
+                    if alias.name == "dataflow.utils.registry" and alias.asname:
+                        registry_modules.add(alias.asname)
+
+        def dotted(node):
+            if isinstance(node, ast.Name):
+                return node.id
+            if isinstance(node, ast.Attribute):
+                return f"{dotted(node.value)}.{node.attr}"
+            return ""
+
+        def owned_registration(node):
+            if not (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "register"
-            )
+            ):
+                return False
+            target = node.func.value
+            if isinstance(target, ast.Name):
+                return target.id in imported_names
+            if isinstance(target, ast.Attribute) and target.attr in registry_names:
+                qualifier = dotted(target.value)
+                return qualifier in registry_modules or qualifier in (
+                    "dataflow.utils.registry", "dataflow.utils"
+                )
+            return False
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name == name and any(
-                    register_call(decorator) for decorator in node.decorator_list
+                    owned_registration(decorator) for decorator in node.decorator_list
                 ):
                     return True
-            # Support both @registry.register() and registry.register(MyClass).
-            if register_call(node) and node.args and isinstance(node.args[0], ast.Name):
-                if node.args[0].id == name:
-                    return True
+            if (
+                owned_registration(node)
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == name
+            ):
+                return True
         return False
 
     def _resolve_prior_builtin_candidates(self, name, current):
