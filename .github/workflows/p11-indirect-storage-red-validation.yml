@@ -1,0 +1,34 @@
+name: Indirect Storage Rollback RED Validation
+
+on:
+  push:
+    branches:
+      - "validation/p11-indirect-storage-red-20261014"
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Compile changed Python files
+        run: python -m compileall -q dataflow/pipeline/Pipeline.py test/cpu_only/test_pipeline_compile_lifecycle.py
+      - name: Compile lifecycle regression
+        run: python -m pytest -q test/cpu_only/test_pipeline_compile_lifecycle.py
