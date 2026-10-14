@@ -327,3 +327,39 @@ def test_scoped_artifact_invalidation_does_not_touch_unrelated_cache_files(tmp_p
     assert not (data / "dataset_info.json").exists()
     assert other.read_text() == "preserve"
     assert source.read_text() == '{"text":"source"}\n'
+
+
+
+@pytest.mark.parametrize("selected_has_valid", [False, True])
+def test_pdf_trainer_checks_selected_cache_not_workspace(tmp_path, monkeypatch, selected_has_valid):
+    import types
+    from dataflow.cli_funcs.pdf2model_pipeline.llama_factory_trainer import LlamaFactoryTrainer
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    selected = tmp_path / "selected"
+    default_data = _prepare(workspace)
+    selected_data = _prepare(selected)
+    if not selected_has_valid:
+        (selected_data / "qa.json").unlink()
+        # The default cache still contains valid but unrelated training QA.
+    else:
+        # The default cache is invalid even though selected cache is valid.
+        (default_data / "qa.json").write_text("[]", encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("PWD", str(workspace))
+    monkeypatch.setitem(sys.modules, "llamafactory", types.ModuleType("llamafactory"))
+
+    trainer = LlamaFactoryTrainer(cache_base=str(selected))
+    assert trainer.check_environment() is selected_has_valid
+
+
+def test_pdf_trainer_default_cache_still_works(tmp_path, monkeypatch):
+    import types
+    from dataflow.cli_funcs.pdf2model_pipeline.llama_factory_trainer import LlamaFactoryTrainer
+
+    _prepare(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "llamafactory", types.ModuleType("llamafactory"))
+    assert LlamaFactoryTrainer(cache_base="./").check_environment()
