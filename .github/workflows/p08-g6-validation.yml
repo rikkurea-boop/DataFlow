@@ -3,7 +3,7 @@ name: P08 G6 QA freshness candidate validation
 on:
   push:
     branches:
-      - bugfix/p08-g6-current-run-qa-freshness-20261014
+      - validation/p08-g6-current-run-qa-freshness
   workflow_dispatch:
 
 jobs:
