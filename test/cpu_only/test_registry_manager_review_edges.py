@@ -90,3 +90,43 @@ def test_duplicate_resolution_after_top_level_loader_initialization():
         value = reg.get("Shared")
         assert value.__module__ == "dataflow.p11_manager_loaded.a.provider", value.__module__
     """)
+
+def test_unregistered_class_and_string_mentions_do_not_trigger_import():
+    fresh(r"""
+        reg = make_registry("p11_manager_notregistered", {
+            "a.py": (
+                '"""Documentation: Shared is an example."""\n'
+                "class Shared: pass\n"
+                "raise RuntimeError('unrelated code executed')\n"
+            ),
+            "z.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_review_registry.register()\n"
+                "class Shared: pass\n"
+            ),
+        })
+        importlib.import_module("dataflow.p11_manager_notregistered.z")
+        assert reg.get("Shared").__module__ == "dataflow.p11_manager_notregistered.z"
+        assert "dataflow.p11_manager_notregistered.a" not in sys.modules
+    """)
+
+
+def test_explicit_register_call_is_a_candidate_without_eager_unrelated_import():
+    fresh(r"""
+        reg = make_registry("p11_manager_direct_register", {
+            "a.py": (
+                "from dataflow.utils import registry as r\n"
+                "class Shared: pass\n"
+                "r._manager_review_registry.register(Shared)\n"
+            ),
+            "b.py": "raise RuntimeError('not a candidate')\n",
+            "z.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_review_registry.register()\n"
+                "class Shared: pass\n"
+            ),
+        })
+        importlib.import_module("dataflow.p11_manager_direct_register.z")
+        assert reg.get("Shared").__module__ == "dataflow.p11_manager_direct_register.a"
+        assert "dataflow.p11_manager_direct_register.b" not in sys.modules
+    """)
