@@ -95,7 +95,7 @@ def test_unregistered_class_and_string_mentions_do_not_trigger_import():
     fresh(r"""
         reg = make_registry("p11_manager_notregistered", {
             "a.py": (
-                '"""Documentation: Shared is an example."""\n'
+                'Documentation: Shared is an example.\n'
                 "class Shared: pass\n"
                 "raise RuntimeError('unrelated code executed')\n"
             ),
