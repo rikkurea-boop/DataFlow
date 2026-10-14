@@ -225,6 +225,10 @@ class QAExtractor(OperatorABC):
 
         if not all_qas:
             self.logger.warning("No QA pairs found!")
+            if self.output_json_file:
+                # This operator owns this output path for the current call.
+                # Do not preserve a previous run's training data on no-result.
+                Path(self.output_json_file).unlink(missing_ok=True)
             return [output_instruction_key, output_question_key, output_answer_key]
 
         # 保存JSON（可选）
