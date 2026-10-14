@@ -222,9 +222,9 @@ class LlamaFactoryTrainer:
         """Check training environment"""
         print("Checking training environment...")
 
-        # 使用绝对路径 - 直接获取调用者工作目录
-        caller_cwd = Path(os.environ.get('PWD', os.getcwd()))
-        data_dir = caller_cwd / ".cache" / "data"
+        # Use the same selected cache as the CLI and generated training YAML.
+        # The caller's working directory may contain stale unrelated QA data.
+        data_dir = self.cache_path / ".cache" / "data"
 
         # Check data files with detailed info
         data_files = [
