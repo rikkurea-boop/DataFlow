@@ -659,6 +659,31 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
                 "Serving cleanup returned an awaitable; transactional mode requires synchronous cleanup"
             )
 
+    @staticmethod
+    def _stream_sync_shutdown(operator):
+        """Reject sync shutdown implementations returning unawaited coroutines.
+
+        Static preflight can reject async functions, but cannot infer a
+        synchronous function's return value without running user code.
+        """
+        import inspect
+        from dataflow.utils.stream_transaction import TransactionError
+
+        result = operator.shutdown()
+        if inspect.isawaitable(result) or inspect.isasyncgen(result):
+            close = getattr(result, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    # An awaitable has no synchronous cleanup contract; reject
+                    # regardless of whether closing the coroutine succeeds.
+                    pass
+            raise TransactionError(
+                "Operator shutdown returned an awaitable; "
+                "restart the process to resume safely"
+            )
+
     def _transactional_forward(self, batch_size):
         from dataflow.utils.stream_transaction import StreamTransactionCoordinator
         from dataflow.utils.stream_transaction import TransactionError
@@ -734,10 +759,12 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
                     active_node = None
                     if hasattr(node.op_obj, "shutdown"):
                         try:
-                            node.op_obj.shutdown()
+                            self._stream_sync_shutdown(node.op_obj)
                         except Exception as exc:
                             self._stream_lifecycle_failed = True
                             coordinator.mark_lifecycle_unsafe()
+                            if isinstance(exc, TransactionError):
+                                raise
                             raise TransactionError(
                                 "Operator shutdown failed after durable stage transition; "
                                 "restart the process to resume"
@@ -758,9 +785,20 @@ class StreamBatchedPipelineABC(BatchedPipelineABC):
                 # Cleanup errors do not mask the primary transaction failure.
                 if active_node is not None and hasattr(active_node.op_obj, "shutdown"):
                     try:
-                        active_node.op_obj.shutdown()
-                    except Exception:
-                        self.logger.exception("Operator shutdown failed during transactional abort")
+                        self._stream_sync_shutdown(active_node.op_obj)
+                    except BaseException:
+                        # Rollback already happened. Do not mask the operator's
+                        # primary exception, but never retry with uncertain
+                        # in-process operator resources.
+                        self._stream_lifecycle_failed = True
+                        coordinator.mark_lifecycle_unsafe()
+                        try:
+                            self.logger.exception(
+                                "Operator shutdown failed during transactional abort; "
+                                "a fresh process is required to resume"
+                            )
+                        except Exception:
+                            pass
                 raise
             finally:
                 try:
