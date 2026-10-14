@@ -1,0 +1,43 @@
+name: P11 Registry Refinement Validation
+
+on:
+  push:
+    branches:
+      - bugfix/p11-04-05-registry-discovery-20261014
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install --no-cache -r requirements.txt
+          uv pip install -e .[test]
+      - name: Syntax validation
+        run: python -m compileall -q dataflow/utils/registry.py test/cpu_only/test_registry_recovery_determinism.py
+      - name: Registry regressions
+        run: python -m pytest -q test/cpu_only/test_registry_recovery_determinism.py test/cpu_only/test_prompt_registry_full_enumeration.py
+      - name: CPU and API suite
+        run: python -m pytest -q -m "cpu or api"
