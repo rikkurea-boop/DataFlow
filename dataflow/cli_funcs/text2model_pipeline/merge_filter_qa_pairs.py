@@ -105,6 +105,10 @@ def convert_to_alpaca(input_file, output_dir):
     """Convert QA data to Alpaca format for LlamaFactory"""
     print(f"Reading data file: {input_file}")
     print(f"Output directory: {output_dir}")
+    output_dir = Path(output_dir)
+    # This function may also be called standalone: never leave a previous
+    # qa.json masquerading as the output of a failed conversion.
+    (output_dir / "qa.json").unlink(missing_ok=True)
 
     # Read main data file
     try:
@@ -260,6 +264,12 @@ def main():
     print("=" * 50)
     print(f"Cache base directory: {cache_path}")
 
+    # In standalone mode, both training artifacts are owned by this conversion
+    # invocation. Invalidate them before any early failure, including missing input.
+    output_dir = cache_path / ".cache" / "data"
+    (output_dir / "qa.json").unlink(missing_ok=True)
+    (output_dir / "dataset_info.json").unlink(missing_ok=True)
+
     # Find input file
     input_file = find_input_file(str(cache_path))
     if not input_file:
@@ -292,8 +302,10 @@ def main():
             print("Ready for LlamaFactory training!")
         else:
             print("Configuration file creation failed")
+            raise SystemExit(1)
     else:
         print("Data conversion failed")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
