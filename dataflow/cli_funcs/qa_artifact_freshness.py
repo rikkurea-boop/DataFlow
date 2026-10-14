@@ -50,9 +50,14 @@ def validate_training_qa(cache_base, *, qa_type="kbc"):
                 return False
     else:
         for row in rows:
+            # Alpaca allows an empty input string for instruction-only samples.
+            # The instruction and response must still be nonempty.
             if not isinstance(row, dict) or not all(
-                _nonempty(row.get(k)) for k in ("instruction", "input", "output")
+                key in row for key in ("instruction", "input", "output")
             ):
+                return False
+            if not (_nonempty(row["instruction"]) and _nonempty(row["output"])
+                    and isinstance(row["input"], str)):
                 return False
     return True
 
