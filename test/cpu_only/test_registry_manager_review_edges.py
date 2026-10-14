@@ -191,3 +191,24 @@ def test_failed_precedence_discovery_rolls_back_and_can_retry():
         importlib.invalidate_caches()
         assert reg.get("Shared").__module__ == "dataflow.p11_manager_precedence_retry.a"
     """)
+
+
+def test_other_registry_decorator_is_not_a_duplicate_candidate():
+    fresh(r"""
+        reg = make_registry("p11_manager_other_registry", {
+            "a.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r.OPERATOR_REGISTRY.register()\n"
+                "class Shared: pass\n"
+                "raise RuntimeError('belongs to a different registry')\n"
+            ),
+            "z.py": (
+                "from dataflow.utils import registry as r\n"
+                "@r._manager_review_registry.register()\n"
+                "class Shared: pass\n"
+            ),
+        })
+        importlib.import_module("dataflow.p11_manager_other_registry.z")
+        assert reg.get("Shared").__module__ == "dataflow.p11_manager_other_registry.z"
+        assert "dataflow.p11_manager_other_registry.a" not in sys.modules
+    """)
