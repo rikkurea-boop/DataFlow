@@ -210,3 +210,120 @@ def test_pdf_cli_valid_refresh_allows_reusing_selected_cache(tmp_path, monkeypat
     assert cli_pdf.cli_pdf2model_train(lf_yaml=str(config), cache_path=str(cache))
     assert trained == ["Current question"]
     assert json.loads((data / "dataset_info.json").read_text())["pdf_kbc_dataset"]["file_name"] == "qa.json"
+
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_text_cli_valid_refresh_trains_only_on_new_selected_cache_qa(tmp_path, monkeypatch, selected):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "selected" if selected else workspace
+    data = _prepare(cache)
+    other = _prepare(workspace) if selected else None
+    gpu = cache / ".cache" / "gpu"
+    gpu.mkdir(parents=True)
+    (gpu / "text_input.jsonl").write_text('{"text":"current"}\n', encoding="utf-8")
+    config = cache / ".cache" / "train_config.yaml"
+    config.write_text("dataset: kb_qa\n", encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(cli_text, "verify_environment", lambda: True)
+    monkeypatch.setattr(cli_text, "get_dataflow_script_path", lambda name: Path(name))
+    seen = []
+
+    def run(script, description, args=None, cwd=None):
+        if description == "Text2QA generation":
+            (gpu / "text2qa_step_step3.json").write_text('{"generated":"now"}', encoding="utf-8")
+        if description == "QA format conversion":
+            (data / "qa.json").write_text(json.dumps(ALPACA), encoding="utf-8")
+            (data / "dataset_info.json").write_text('{"kb_qa":{"file_name":"qa.json"}}', encoding="utf-8")
+        if description == "Model training":
+            seen.append(json.loads((data / "qa.json").read_text())[0]["input"])
+        return True
+
+    monkeypatch.setattr(cli_text, "run_script_with_args", run)
+    assert cli_text.cli_text2model_train(input_dir=str(workspace), cache_path=str(cache))
+    assert seen == ["New question"]
+    if other is not None:
+        assert json.loads((other / "qa.json").read_text()) == ALPACA
+
+
+@pytest.mark.parametrize("qa_type,data", [
+    ("kbc", []),
+    ("kbc", [{"input": "only question"}]),
+    ("kbc", ["legacy stale row"]),
+    ("vqa", [{"messages": [{"role": "user", "content": "q"}], "images": []}]),
+])
+def test_pdf_cli_invalid_current_qa_rejected_before_metadata_and_training(tmp_path, monkeypatch, qa_type, data):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "cache"
+    output = _prepare(cache)
+    (cache / ".cache" / "train_config.yaml").write_text("dataset: pdf_kbc_dataset\n", encoding="utf-8")
+    (cache / ".cache" / "pdf2model_state.json").write_text(
+        json.dumps({"qa": qa_type}), encoding="utf-8"
+    )
+    config = workspace / "train_config.yaml"
+    config.write_text("dataset: pdf_kbc_dataset\n", encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(cli_pdf, "verify_environment", lambda: True)
+    monkeypatch.setattr(cli_pdf, "check_required_files", lambda: True)
+    monkeypatch.setattr(cli_pdf, "get_dataflow_script_path", lambda name: Path(name))
+    calls = []
+
+    def run(script, description, args=None, cwd=None):
+        calls.append(description)
+        if description == "Step 2: Data Processing":
+            (output / "qa.json").write_text(json.dumps(data), encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(cli_pdf, "run_script_with_args", run)
+    assert cli_pdf.cli_pdf2model_train(lf_yaml=str(config), cache_path=str(cache)) is False
+    assert "Step 2: Data Processing" in calls
+    assert not any("Training" in call for call in calls)
+    assert not (output / "dataset_info.json").exists()
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_pdf_cli_real_vqa_shape_stays_accepted(tmp_path, monkeypatch, selected):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "selected" if selected else workspace
+    data = _prepare(cache, fmt="sharegpt")
+    (cache / ".cache" / "train_config.yaml").write_text("dataset: pdf_vqa_dataset\n", encoding="utf-8")
+    (cache / ".cache" / "pdf2model_state.json").write_text('{"qa":"vqa"}', encoding="utf-8")
+    config = workspace / "train_config.yaml"
+    config.write_text("dataset: pdf_vqa_dataset\n", encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(cli_pdf, "verify_environment", lambda: True)
+    monkeypatch.setattr(cli_pdf, "check_required_files", lambda: True)
+    monkeypatch.setattr(cli_pdf, "get_dataflow_script_path", lambda name: Path(name))
+    trained = []
+
+    def run(script, description, args=None, cwd=None):
+        if description == "Step 2: Data Processing":
+            (data / "qa.json").write_text(json.dumps(VQA), encoding="utf-8")
+        if "Training" in description:
+            trained.append(json.loads((data / "qa.json").read_text()))
+        return True
+
+    monkeypatch.setattr(cli_pdf, "run_script_with_args", run)
+    assert cli_pdf.cli_pdf2model_train(lf_yaml=str(config), cache_path=str(cache))
+    assert trained == [VQA]
+    info = json.loads((data / "dataset_info.json").read_text())
+    assert info["pdf_vqa_dataset"]["formatting"] == "sharegpt"
+
+
+def test_scoped_artifact_invalidation_does_not_touch_unrelated_cache_files(tmp_path):
+    from dataflow.cli_funcs.qa_artifact_freshness import invalidate_generated_outputs
+    cache = tmp_path / "selected"
+    data = _prepare(cache)
+    other = cache / ".cache" / "data" / "custom.json"
+    other.write_text("preserve", encoding="utf-8")
+    source = cache / ".cache" / "gpu" / "text_input.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text('{"text":"source"}\n', encoding="utf-8")
+    invalidate_generated_outputs(cache, text_intermediate=True)
+    assert not (data / "qa.json").exists()
+    assert not (data / "dataset_info.json").exists()
+    assert other.read_text() == "preserve"
+    assert source.read_text() == '{"text":"source"}\n'
