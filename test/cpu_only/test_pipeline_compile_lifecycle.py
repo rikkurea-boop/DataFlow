@@ -169,3 +169,70 @@ def test_repeated_compile_does_not_reregister_or_execute(base):
     assert pipeline.storage.dataframe["result"].tolist() == [3, 4, 5]
     assert pipeline.first._operator.run_calls == 1
     assert pipeline.second._operator.run_calls == 1
+
+
+class _StorageHolder:
+    """A common user-owned wrapper not directly stored as pipeline.storage."""
+
+    def __init__(self, storage):
+        self.storage = storage
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("base", [PipelineABC, BatchedPipelineABC, StreamBatchedPipelineABC])
+@pytest.mark.parametrize("failure_stage", ["forward", "after_graph"])
+def test_indirect_storage_recovers_after_failed_compile(base, failure_stage):
+    class NestedStoragePipeline(base):
+        def __init__(self):
+            super().__init__()
+            self.settings = {"nested": [_StorageHolder(_MemoryStorage())]}
+            self.operator = _Increment()
+            self.failure_stage = failure_stage
+
+        def forward(self):
+            self.operator.run(
+                storage=self.settings["nested"][0].storage.step(),
+                input_key="value",
+                output_key="result",
+            )
+            if self.failure_stage == "forward":
+                raise RuntimeError("failure after nested storage advancement")
+
+        def _build_operator_nodes_graph(self):
+            super()._build_operator_nodes_graph()
+            if self.failure_stage == "after_graph":
+                raise RuntimeError("failure after complete graph construction")
+
+    pipeline = NestedStoragePipeline()
+    storage = pipeline.settings["nested"][0].storage
+    original_operator = pipeline.operator
+    original_forward = pipeline.forward.__func__
+
+    with pytest.raises(RuntimeError):
+        pipeline.compile()
+
+    assert storage.operator_step == 0
+    assert pipeline.compiled is False
+    assert pipeline.forward.__func__ is original_forward
+    assert pipeline.operator is original_operator
+    assert pipeline.op_runtimes == []
+    assert pipeline.op_nodes_list == []
+    assert pipeline.accumulated_keys == []
+    assert not hasattr(pipeline, "input_dataset_node")
+    assert not hasattr(pipeline, "output_dataset_node")
+    assert not hasattr(pipeline, "final_keys")
+    assert original_operator.run_calls == 0
+
+    pipeline.failure_stage = None
+    pipeline.compile()
+    pipeline.compile()  # Repeated compilation must still be a no-op.
+    assert storage.operator_step == 1
+    assert len(pipeline.op_runtimes) == 1
+    assert pipeline.op_runtimes[0].kwargs["storage"] is storage
+    assert len(pipeline.op_nodes_list) == 3
+    if base is PipelineABC:
+        pipeline.forward()
+    else:
+        pipeline.forward(resume_from_last=False)
+    assert storage.dataframe["result"].tolist() == [2, 3, 4]
+    assert original_operator.run_calls == 1
