@@ -161,13 +161,43 @@ class Registry():
             return deco
         self._do_register(obj.__name__, obj)
 
-    def _resolve_prior_builtin_candidates(self, name, current):
-        """Resolve earlier built-in providers without eager full enumeration.
+    @staticmethod
+    def _source_declares_registration(source, name):
+        """Recognize static registration sites without executing unrelated code.
 
-        Discovery order alone is insufficient when a class was imported directly
-        before the registry loaded its remaining modules. Import only earlier
-        source modules mentioning the requested name. This leaves unrelated
-        modules lazy and keeps third-party explicit registrations untouched.
+        Comment/string mentions and undecorated classes are not registrations.
+        Dynamic names or registry mutations cannot be inferred from the AST;
+        explicit full enumeration remains available for those cases.
+        """
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, SyntaxError):
+            return False
+
+        def register_call(node):
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "register"
+            )
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == name and any(
+                    register_call(decorator) for decorator in node.decorator_list
+                ):
+                    return True
+            # Support both @registry.register() and registry.register(MyClass).
+            if register_call(node) and node.args and isinstance(node.args[0], ast.Name):
+                if node.args[0].id == name:
+                    return True
+        return False
+
+    def _resolve_prior_builtin_candidates(self, name, current):
+        """Find higher-ranked built-in registrations without full discovery.
+
+        A top-level package being initialized does not imply that nested
+        modules have been imported, so this check is independent of loader_map.
         """
         prefix = f"dataflow.{self._name}."
         current_module = getattr(current, "__module__", "")
@@ -186,22 +216,15 @@ class Registry():
                 contender = prefix + ".".join(parts)
                 if contender >= current_module or contender in sys.modules:
                     continue
-                try:
-                    text = source.read_text(encoding="utf-8")
-                except (OSError, UnicodeError):
-                    # Unreadable sources should not make a registered object
-                    # unavailable; normal full discovery remains authoritative.
-                    continue
-                if name in text:
+                if self._source_declares_registration(source, name):
                     importlib.import_module(contender)
 
     def get(self, name):
         ret = self._obj_map.get(name)
         if ret is not None:
-            if (None in getattr(self, "loader_map", {}).values()
-                    and getattr(ret, "__module__", "").startswith(
-                        f"dataflow.{self._name}."
-                    )):
+            if getattr(ret, "__module__", "").startswith(
+                f"dataflow.{self._name}."
+            ):
                 with self._discovery_transaction():
                     self._resolve_prior_builtin_candidates(name, ret)
                     return self._obj_map[name]
