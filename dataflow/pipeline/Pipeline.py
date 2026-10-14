@@ -41,22 +41,57 @@ class PipelineABC(ABC):
         pass
     
     def compile(self):
-        self.compiled = True # flag the pipeline as compiled
-        for k, v in vars(self).items():
-            if isinstance(v, OperatorABC):
-                setattr(self, k, AutoOP(v, k, self)) 
-        self.forward()
-        # after call forward, call back function in AutoOP will add the OPRuntime object to self.op_runtimes
-        
+        """Compile once, restoring the uncompiled pipeline on failure.
+
+        A successful compilation is stable: subsequent calls do not invoke the
+        already-compiled forward method or register another set of nodes.
+        Failures leave the original forward method and operators available for
+        a corrected retry on the same instance.
+        """
+        if self.compiled:
+            return
+
+        # Keep the original attribute bindings, including the subclass's
+        # forward method (which may have been attached to this instance).
+        previous_attributes = vars(self).copy()
+        storage_steps = {
+            id(value): (value, value.operator_step)
+            for value in previous_attributes.values()
+            if isinstance(value, DataFlowStorage)
+            and hasattr(value, "operator_step")
+        }
+
+        # Each attempt has its own graph construction state.
+        self.op_runtimes = []
+        self.op_nodes_list = []
+        self.accumulated_keys = []
+        self.llm_serving_list = []
+        self.llm_serving_counter = Counter()
+
+        try:
+            for name, value in previous_attributes.items():
+                if isinstance(value, OperatorABC):
+                    setattr(self, name, AutoOP(value, name, self))
+
+            # AutoOP.run records calls instead of executing operators.
+            self.forward()
+            self.logger.info(
+                f"Compiling pipeline and validating key integrity "
+                f"across {len(self.op_runtimes)} operator runtimes."
+            )
+            self._build_operator_nodes_graph()
+        except BaseException:
+            # Restore bindings and remove graph fields created by the failed
+            # attempt. Do not deep-copy operators, services or storage.
+            vars(self).clear()
+            vars(self).update(previous_attributes)
+            for storage, step in storage_steps.values():
+                storage.operator_step = step
+            raise
+
         self.forward = self._compiled_forward
-        self.logger.info(
-            f"Compiling pipeline and validating key integrity "
-            f"across {len(self.op_runtimes)} operator runtimes."
-        )
-        self._build_operator_nodes_graph()
-        # self._draw_graph_for_operators()
-        # self._build_serving_resources_map()
-        
+        self.compiled = True
+
     def _build_operator_nodes_graph(self):
         """
         Build a graph of operator nodes, each node contains the operator object and its storage.
@@ -68,7 +103,7 @@ class PipelineABC(ABC):
                 if isinstance(v, LLM_SERVING_CLASSES):
                     llm_serving_obj = v
             # get storage object from the function dict
-            storage_obj = op_runtime.kwargs.pop("storage", None)
+            storage_obj = op_runtime.kwargs.get("storage")
             
             assert isinstance(storage_obj, DataFlowStorage), f"Storage must be a DataFlowStorage object, but got {type(storage_obj)} in {op_runtime}'s `run` function with key `storage`."
             
@@ -78,7 +113,7 @@ class PipelineABC(ABC):
                 op_name=op_runtime.op_name,
                 storage=storage_obj,
                 llm_serving=llm_serving_obj,
-                **op_runtime.kwargs
+                **{key: value for key, value in op_runtime.kwargs.items() if key != "storage"}
             )
             
             # append to lists, if None, just keep it
