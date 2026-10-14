@@ -207,13 +207,15 @@ class Registry():
             return ""
 
         def owned_registration(node):
+            # Registry.register supports both @registry.register and
+            # @registry.register() in addition to registry.register(Class).
+            target_call = node.func if isinstance(node, ast.Call) else node
             if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "register"
+                isinstance(target_call, ast.Attribute)
+                and target_call.attr == "register"
             ):
                 return False
-            target = node.func.value
+            target = target_call.value
             if isinstance(target, ast.Name):
                 return target.id in imported_names
             if isinstance(target, ast.Attribute) and target.attr in registry_names:
@@ -223,20 +225,88 @@ class Registry():
                 )
             return False
 
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.name == name and any(
-                    owned_registration(decorator) for decorator in node.decorator_list
-                ):
-                    return True
-            if (
-                owned_registration(node)
-                and node.args
-                and isinstance(node.args[0], ast.Name)
-                and node.args[0].id == name
-            ):
-                return True
-        return False
+        def expression_registers(node):
+            """A direct registration call evaluated by this statement."""
+            return any(
+                isinstance(child, ast.Call)
+                and child.args
+                and isinstance(child.args[0], ast.Name)
+                and child.args[0].id == name
+                and owned_registration(child)
+                for child in ast.walk(node)
+            )
+
+        def static_truth(node):
+            """Evaluate only literal conditions; do not execute arbitrary code."""
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+                operand = static_truth(node.operand)
+                return None if operand is None else not operand
+            if isinstance(node, ast.BoolOp):
+                values = [static_truth(value) for value in node.values]
+                if isinstance(node.op, ast.And):
+                    if False in values:
+                        return False
+                    if all(value is True for value in values):
+                        return True
+                elif isinstance(node.op, ast.Or):
+                    if True in values:
+                        return True
+                    if all(value is False for value in values):
+                        return False
+                return None
+            try:
+                return bool(ast.literal_eval(node))
+            except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+                return None
+
+        def block_registers(statements):
+            # Unlike ast.walk, this respects known-dead branches and does not
+            # descend into functions whose bodies run only if called.
+            for statement in statements:
+                if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if statement.name == name and any(
+                        owned_registration(decorator)
+                        for decorator in statement.decorator_list
+                    ):
+                        return True
+                    if isinstance(statement, ast.ClassDef) and block_registers(statement.body):
+                        return True
+                elif isinstance(statement, ast.If):
+                    condition = static_truth(statement.test)
+                    if condition is not False and block_registers(statement.body):
+                        return True
+                    if condition is not True and block_registers(statement.orelse):
+                        return True
+                elif isinstance(statement, (ast.While, ast.For, ast.AsyncFor)):
+                    if isinstance(statement, ast.While) and static_truth(statement.test) is False:
+                        if block_registers(statement.orelse):
+                            return True
+                    elif block_registers(statement.body) or block_registers(statement.orelse):
+                        return True
+                elif isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
+                    if block_registers(statement.body):
+                        return True
+                    if any(block_registers(handler.body) for handler in statement.handlers):
+                        return True
+                    if block_registers(statement.orelse) or block_registers(statement.finalbody):
+                        return True
+                elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                    if block_registers(statement.body):
+                        return True
+                elif isinstance(statement, ast.Match):
+                    for case in statement.cases:
+                        if case.guard is not None and static_truth(case.guard) is False:
+                            continue
+                        if block_registers(case.body):
+                            return True
+                else:
+                    if expression_registers(statement):
+                        return True
+                if isinstance(statement, (ast.Raise, ast.Return, ast.Break, ast.Continue)):
+                    break
+            return False
+
+        return block_registers(tree.body)
 
     def _resolve_prior_builtin_candidates(self, name, current):
         """Find higher-ranked built-in registrations without full discovery.
